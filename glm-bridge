@@ -102,6 +102,11 @@ cmd_follow() {
   tail -f "$OUT_LOG"
 }
 
+cmd_probe() {
+  echo "Sonda de verificación del modelo real (2 llamadas API)..."
+  node "$BRIDGE_DIR/probe.mjs"
+}
+
 case "${1:-status}" in
   start)   cmd_start ;;
   stop)    cmd_stop ;;
@@ -110,5 +115,6 @@ case "${1:-status}" in
   logs)    shift; cmd_logs "${1:-50}" ;;
   follow)  cmd_follow ;;
   health)  health || { echo "sin respuesta"; exit 1; } ;;
-  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health}"; exit 2 ;;
+  probe)   cmd_probe ;;
+  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health|probe}"; exit 2 ;;
 esac

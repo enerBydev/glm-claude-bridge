@@ -59,17 +59,18 @@ glm-bridge status               # bridge health / logs
 
 | Script | Purpose |
 |---|---|
-| `glm-claude` | Starts the bridge if needed, exports the full Claude Code env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model mapping, telemetry off), then `exec claude "$@"` |
-| `glm-bridge` | `start \| stop \| restart \| status \| logs [n] \| follow \| health` |
+| `glm-claude` | Starts the bridge if needed, exports the full Claude Code env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model mapping, telemetry off), then `exec claude "$@"`. Supports `glm-claude --model <label>` to set the session model label |
+| `glm-bridge` | `start \| stop \| restart \| status \| logs [n] \| follow \| health \| probe` — `probe` live-verifies which model the gateway actually serves |
 
 ## Repository layout
 
 ```
-bridge.mjs          HTTP server: routing, SSE pump, retries, logging
+bridge.mjs          HTTP server: routing, SSE pump, retries, logging (logs the gateway's real model echo)
 translate.mjs       Pure Anthropic⇄GLM translation + streaming state machine
 zai-config.mjs      Credential loader (.z-ai-config) + upstream headers
-glm-bridge          Control CLI (start/stop/status/logs/health)
-glm-claude          One-command launcher for Claude Code
+probe.mjs           Live probe: which model does the gateway really serve?
+glm-bridge          Control CLI (start/stop/status/logs/health/probe)
+glm-claude          One-command launcher for Claude Code (--model supported)
 scripts/debug-sse.mjs   Upstream SSE probe (raw bytes + parser simulation)
 tests/test-translate.mjs  26 unit tests for the translation layer
 .github/workflows/ci.yml  CI: syntax checks + tests across Node 20/22/24
@@ -80,7 +81,7 @@ README.es.md        Documentación en español
 
 | Variable | Default | Description |
 |---|---|---|
-| `GLM_MODEL` | `glm-5.3-flash` | Upstream model. Non-`glm-*` requested models are mapped to it |
+| `GLM_MODEL` | `glm-5.3-flash` | Model **label** (see *Which model actually runs?*). Non-`glm-*` requested models are mapped to it; `glm-*` labels are forwarded verbatim |
 | `GLM_BRIDGE_PORT` / `GLM_BRIDGE_HOST` | `8787` / `127.0.0.1` | Bridge listen address |
 | `GLM_THINKING` | `0` | `1` enables upstream thinking (reasoning deltas are still not forwarded) |
 | `GLM_BRIDGE_TOOL_HINT` | on | Appends a system note that forbids tool-name localization |
@@ -99,24 +100,63 @@ README.es.md        Documentación en español
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_TELEMETRY`,
 `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, `API_TIMEOUT_MS=600000`.
 
+## Which model actually runs? (evidence-based)
+
+Fair question: "is glm-5.3-flash really running behind the scenes?" A full
+forensic investigation (SDK dissection, sandbox forensics, API surface
+mapping, behavioral fingerprinting) says:
+
+1. **The `model` field has zero observable effect.** In 6/6 controlled tests
+   the gateway answered identically to `glm-5.3-flash`, a made-up name,
+   `claude-sonnet-4-5`, and **no `model` field at all** — always echoing the
+   static label `glm-4-plus`.
+2. **Z.ai's own SDK never sends `model` for chat** (`z-ai-web-dev-sdk`): even
+   the official client doesn't choose a model — the gateway decides
+   server-side. The only named-model request in the whole ecosystem is
+   `glm-4.6v`, on the vision endpoint.
+3. **The GLM/Zhipu family is confirmed behaviorally**: with no system prompt
+   the model self-identifies as GLM / Zhipu AI 100% of the time; error codes
+   and messages match Zhipu's BigModel stack. The *exact generation* stays
+   uncertain because single cutoff probes are noisy (the same backend both
+   knew and didn't know DeepSeek-R1 on different runs).
+4. **There is no observable way to select a model with this credential**: no
+   `/v1/models`, no name validation, no name-based routing. Observable routing
+   is per-endpoint only (`/chat/completions/vision` serves a different class,
+   echoing `glm-5v-turbo`).
+5. **Real quotas** (exposed via `x-ratelimit-*` headers): 2 QPS,
+   30 requests / 10 min and 300 / day per bucket — size your agentic usage
+   accordingly.
+
+**Practical takeaway**: `GLM_MODEL` / `--model` configure the *label* Claude
+Code sees and requests (forwarded verbatim, so it future-proofs you if the
+gateway ever routes by name), but the served model today is Z.ai's default.
+Whatever Claude Code *says* it is, is not evidence — its system prompt tells
+it "you are Claude" and the underlying model parrots that. Run
+`glm-bridge probe` any time to see what the gateway declares and a live
+behavioral reading.
+
 ## Hard-won implementation notes
 
 1. **`X-Z-AI-From: Z` is mandatory** on this gateway; requests without it get
    an empty 403. The bridge always sends it.
-2. **Aggressive rate limiting** — bursts of requests trigger empty 403s. The
+2. **The gateway ignores the `model` field** (see the section above): the
+   bridge still forwards `glm-*` names verbatim and logs the gateway's real
+   echo on every request (`eco gateway model=...` in logs,
+   `gateway_echo_model` in `/health`).
+3. **Aggressive rate limiting** — bursts of requests trigger empty 403s. The
    retry layer absorbs them transparently.
-3. **Tool-name localization defense** — the gateway was observed rewriting
+4. **Tool-name localization defense** — the gateway was observed rewriting
    `get_weather` to `Obtener clima`. Countermeasures: system hint + resolver
    (exact → normalized → containment → single-offered → token overlap) and a
    safe degrade-to-text path so Claude Code never sees an invalid `tool_use`.
-4. **Node 24 fetch chunks are `Uint8Array`**, not `Buffer` — `.toString()`
+5. **Node 24 fetch chunks are `Uint8Array`**, not `Buffer` — `.toString()`
    yields comma-joined byte codes. The bridge decodes with `TextDecoder`
    (`stream: true`) so multi-byte UTF-8 split across chunks is safe.
-5. **`req.on('close')` fires when the request body has been read**, not when
+6. **`req.on('close')` fires when the request body has been read**, not when
    the client disconnects — listen on `res.on('close')` + `writableEnded`.
-6. **`claude -p` without a TTY waits for stdin EOF** — redirect
+7. **`claude -p` without a TTY waits for stdin EOF** — redirect
    `< /dev/null` in scripts (interactive terminals are unaffected).
-7. **Images are only accepted on `/chat/completions/vision`** (plain
+8. **Images are only accepted on `/chat/completions/vision`** (plain
    `/chat/completions` returns 400 for image parts). The bridge detects image
    blocks and routes those requests automatically.
 

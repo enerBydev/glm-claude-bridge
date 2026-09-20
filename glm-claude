@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
 # glm-claude — lanzador de Claude Code oficial sobre GLM vía GLM-Bridge.
-# Uso: glm-claude [argumentos normales de claude]
-#   glm-claude                  → REPL interactivo
-#   glm-claude -p "haz X"       → modo no interactivo
-#   glm-claude --resume         → continuar sesión
+# Uso: glm-claude [--model NOMBRE] [argumentos normales de claude]
+#   glm-claude                       → REPL interactivo
+#   glm-claude -p "haz X"            → modo no interactivo
+#   glm-claude --model glm-x -p ...  → etiqueta de modelo para esta sesión
+# Nota: el gateway Z.ai actualmente ignora el campo model (sirve su default);
+# --model configura la etiqueta que CC ve/pide y que el bridge reenviará
+# literal si el gateway algún día empieza a rutear por nombre.
 # ============================================================================
 set -eu
 # resuelve symlinks para hallar el directorio real del script
@@ -17,12 +20,36 @@ done
 BRIDGE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PORT="${GLM_BRIDGE_PORT:-8787}"
 
+# 0) --model exclusivo del lanzador (se consume y no llega a claude)
+SESSION_MODEL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model)
+      [ $# -ge 2 ] || { echo "glm-claude: --model requiere un valor" >&2; exit 2; }
+      SESSION_MODEL="$2"; shift 2 ;;
+    --model=*)
+      SESSION_MODEL="${1#--model=}"; shift ;;
+    *) break ;;
+  esac
+done
+if [ -n "$SESSION_MODEL" ]; then
+  export GLM_MODEL="$SESSION_MODEL"
+fi
+
 # 1) puente en marcha
 "$BRIDGE_DIR/glm-bridge" start >/dev/null 2>&1 || {
   "$BRIDGE_DIR/glm-bridge" start  # reintento verboso para ver el error
 }
 
 # 2) entorno para Claude Code — todo el tráfico va al bridge local
+#    (el bridge reinicia con GLM_MODEL de la sesión si --model lo cambió)
+if [ -n "$SESSION_MODEL" ]; then
+  "$BRIDGE_DIR/glm-bridge" restart >/dev/null 2>&1 || "$BRIDGE_DIR/glm-bridge" restart
+else
+  "$BRIDGE_DIR/glm-bridge" start >/dev/null 2>&1 || {
+    "$BRIDGE_DIR/glm-bridge" start  # reintento verboso para ver el error
+  }
+fi
 export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-glm-bridge-local}"
 export ANTHROPIC_API_KEY=""                      # fuerza uso de AUTH_TOKEN

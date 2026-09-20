@@ -42,6 +42,9 @@ const UPSTREAM = upstreamUrl(cfg);
 const UPSTREAM_VISION = upstreamVisionUrl(cfg);
 const HEADERS = upstreamHeaders(cfg);
 
+// último "model" que el gateway declaró servir en su eco (puede ser cosmético)
+let lastEchoModel = null;
+
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, `bridge-${new Date().toISOString().slice(0, 10)}.log`);
 
@@ -228,7 +231,11 @@ async function handleMessages(req, res) {
       let sseBuf = '';
       const parser = sseLineParser((payload) => {
         if (payload === '[DONE]') return;
-        try { for (const ev of tr.handleChunk(JSON.parse(payload))) {} } catch {}
+        try {
+          const obj = JSON.parse(payload);
+          if (obj.model && !lastEchoModel) { lastEchoModel = obj.model; reqLog(`eco gateway model=${obj.model}`); }
+          for (const ev of tr.handleChunk(obj)) {}
+        } catch {}
       });
       for await (const chunk of upRes.body) {
         sseBuf = decoder.decode(chunk, { stream: true });
@@ -240,6 +247,7 @@ async function handleMessages(req, res) {
     let upJson;
     try { upJson = JSON.parse(await upRes.text()); }
     catch (e) { return anthropicError(res, 502, 'api_error', 'respuesta upstream no-JSON: ' + e.message); }
+    if (upJson.model) { lastEchoModel = upJson.model; reqLog(`eco gateway model=${upJson.model}`); }
     const final = anthropicFromComplete(upJson, requestedModel, offeredNames);
     return sendJson(res, 200, final, reqLog, t0, { stats: { inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens, tools: final.content.filter(b => b.type === 'tool_use').length } });
   }
@@ -296,6 +304,7 @@ async function handleMessages(req, res) {
     if (payload === '[DONE]') return;
     let obj;
     try { obj = JSON.parse(payload); } catch { return; }
+    if (obj.model && !lastEchoModel) { lastEchoModel = obj.model; reqLog(`eco gateway model=${obj.model}`); }
     try {
       for (const ev of tr.handleChunk(obj)) writeEvent(ev);
     } catch (e) {
@@ -391,7 +400,7 @@ const server = http.createServer(async (req, res) => {
   const url = (req.url || '').split('?')[0];
   try {
     if (req.method === 'GET' && (url === '/health' || url === '/')) {
-      const body = JSON.stringify({ status: 'ok', bridge: 'glm-bridge', model: DEFAULT_MODEL, upstream: UPSTREAM, pid: process.pid });
+      const body = JSON.stringify({ status: 'ok', bridge: 'glm-bridge', model: DEFAULT_MODEL, gateway_echo_model: lastEchoModel, upstream: UPSTREAM, pid: process.pid });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(body);
     }

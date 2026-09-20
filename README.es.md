@@ -36,6 +36,7 @@ El bridge expone la API de Messages de Anthropic y traduce en tiempo real:
 glm-claude                      # REPL interactivo (equivale a `claude`)
 glm-claude -p "haz algo"        # modo no interativo
 glm-claude --resume             # continuar sesión
+glm-claude --model glm-x -p ... # etiqueta de modelo para esta sesión (ver abajo)
 ```
 
 Los symlinks están en `~/.npm-global/bin/` (ya en el PATH).
@@ -43,18 +44,22 @@ Los symlinks están en `~/.npm-global/bin/` (ya en el PATH).
 ## Control del bridge
 
 ```bash
-glm-bridge start | stop | restart | status | logs [n] | follow | health
+glm-bridge start | stop | restart | status | logs [n] | follow | health | probe
 ```
+
+`glm-bridge probe` verifica en vivo qué modelo sirve realmente el gateway
+(2 llamadas API): eco declarado + sonda conductual de cutoff.
 
 ## Ficheros
 
 | Fichero | Papel |
 |---|---|
-| `bridge.mjs` | Servidor HTTP, routing, SSE pump, reintentos, logging |
+| `bridge.mjs` | Servidor HTTP, routing, SSE pump, reintentos, logging (incluye eco del gateway) |
 | `translate.mjs` | Traducción pura Anthropic⇄GLM + máquina de estados de streaming |
 | `zai-config.mjs` | Carga de credenciales (`.z-ai-config`) y cabeceras upstream |
-| `glm-bridge` | CLI de control (start/stop/status/logs) |
-| `glm-claude` | Lanzador: arranca bridge, exporta env, `exec claude` |
+| `probe.mjs` | Sonda de verificación del modelo real (eco + cutoff conductual) |
+| `glm-bridge` | CLI de control (start/stop/status/logs/**probe**) |
+| `glm-claude` | Lanzador: arranca bridge, exporta env, `exec claude` (soporta `--model`) |
 | `logs/` | `server.out` (log vivo) y `bridge-YYYY-MM-DD.log` (por día) |
 
 ## Variables de entorno
@@ -81,8 +86,10 @@ El lanzador `glm-claude` exporta además el entorno correcto para Claude Code
 
 1. **`X-Z-AI-From: Z` es obligatorio** en el gateway: sin esa cabecera responde
    403 vacío (fue la causa de los primeros fallos). El bridge la envía siempre.
-2. El gateway reporta el modelo que sirve con su alias interno; el nombre
-   pedido se respeta como passthrough.
+2. **El gateway IGNORA el campo `model`** (ver sección siguiente): acepta
+   nombres válidos, falsos o ausentes y sirve siempre su default. El bridge
+   reenvía `glm-*` tal cual y registra en cada petición el eco real
+   (`eco gateway model=...` en logs y `gateway_echo_model` en `/health`).
 3. Rate-limiting agresivo: peticiones rápidas encadenadas → 403. El backoff
    del bridge lo absorbe de forma transparente.
 4. El gateway llegó a devolver un nombre de herramienta traducido
@@ -95,6 +102,35 @@ El lanzador `glm-claude` exporta además el entorno correcto para Claude Code
 6. `claude -p` en contextos sin TTY espera EOF de stdin: redirigir con
    `< /dev/null` en scripts (en terminal interactivo no afecta).
 
+## ¿Qué modelo corre realmente? (investigación con evidencia)
+
+Pregunta legítima: «¿de verdad corre glm-5.3-flash detrás?». Investigación
+forense completa (SDK, entorno, superficie API, fingerprint conductual):
+
+1. **El campo `model` no tiene ningún efecto observable.** En 6/6 tests el
+   gateway respondió idéntico pidiendo `glm-5.3-flash`, `modelo-falso-xyz`,
+   `claude-sonnet-4-5` o **sin campo `model`** (eco estático: `glm-4-plus`).
+2. **El SDK oficial de Z.ai (`z-ai-web-dev-sdk`) nunca envía `model`** en chat:
+   el cliente oficial tampoco elige modelo — el gateway decide server-side.
+3. **Familia confirmada por conducta**: sin system prompt el modelo se
+   autoidentifica como GLM/Zhipu AI en el 100% de los casos; el stack es
+   Zhipu BigModel (errores con código 1210, mensajes en chino). La generación
+   exacta es incierta por sampling (sondas de cutoff contradictorias entre
+   ejecuciones: conoció e ignoró DeepSeek-R1 en días distintos).
+4. **No hay manera observable de elegir modelo con esta credencial**: sin
+   `/v1/models`, sin validación de nombres, sin routing por nombre. El ruteo
+   observable solo existe por endpoint (`/chat/completions/vision` sirve otra
+   clase de modelo, eco `glm-5v-turbo`).
+5. **Cuotas reales** (exponen los headers `x-ratelimit-*`): 2 QPS,
+   30 peticiones/10 min y 300/día por bucket — dimensiona el uso agéntico.
+
+**Conclusión práctica**: `GLM_MODEL` / `--model` configuran la *etiqueta* que
+Claude Code ve y pide (y que el bridge reenviará literal si el gateway algún
+día ruteara por nombre), pero el modelo servido hoy lo decide Z.ai. La sonda
+`glm-bridge probe` permite verificar en vivo lo que el gateway declara y
+muestra. Las respuestas de Claude Code sobre su identidad NO son evidencia:
+el system prompt de CC le dice "eres Claude" y el modelo lo repite.
+
 ## Verificación realizada
 
 - 26 tests unitarios de traducción (`scripts/test-translate.mjs`): OK
@@ -102,4 +138,5 @@ El lanzador `glm-claude` exporta además el entorno correcto para Claude Code
 - Bucle agéntico completo con 20 herramientas: Write + Read + Bash OK
   (el modelo creó ficheros, los leyó y reportó contenido real)
 - Arranque en frío vía `glm-claude` (bridge on-demand): OK
-- Ciclo `glm-bridge start/stop/restart/status` vía symlinks: OK
+- Ciclo `glm-bridge start/stop/restart/status/probe` vía symlinks: OK
+- Eco real del gateway registrado en logs y `/health`: OK
