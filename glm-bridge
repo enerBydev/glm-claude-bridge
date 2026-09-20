@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# ============================================================================
+# glm-bridge — control del GLM-Bridge (start/stop/restart/status/logs/health)
+# Solución a medida para ejecutar Claude Code oficial sobre GLM.
+# ============================================================================
+set -u
+# resuelve symlinks para hallar el directorio real del script
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BRIDGE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PID_FILE="$BRIDGE_DIR/run/bridge.pid"
+LOG_DIR="$BRIDGE_DIR/logs"
+mkdir -p "$LOG_DIR" "$BRIDGE_DIR/run"
+
+PORT="${GLM_BRIDGE_PORT:-8787}"
+HOST="${GLM_BRIDGE_HOST:-127.0.0.1}"
+OUT_LOG="$LOG_DIR/server.out"
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid; pid="$(cat "$PID_FILE" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+health() {
+  curl -fsS --max-time 3 "http://$HOST:$PORT/health" 2>/dev/null
+}
+
+wait_healthy() {
+  for _ in $(seq 1 40); do
+    if health >/dev/null 2>&1; then return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+
+cmd_start() {
+  if is_running && health >/dev/null 2>&1; then
+    echo "glm-bridge: ya está en marcha (pid $(cat "$PID_FILE")) en http://$HOST:$PORT"
+    return 0
+  fi
+  if is_running; then
+    echo "glm-bridge: proceso previo (${pid:-$(cat "$PID_FILE")}) sin responder, matando..." >&2
+    kill -9 "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+  echo "glm-bridge: iniciando en http://$HOST:$PORT ..."
+  nohup node "$BRIDGE_DIR/bridge.mjs" >> "$OUT_LOG" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+  if wait_healthy; then
+    echo "glm-bridge: OK (pid $pid)"
+    health
+    return 0
+  fi
+  echo "glm-bridge: ERROR — no respondió a tiempo. Últimas líneas:" >&2
+  tail -n 15 "$OUT_LOG" >&2
+  return 1
+}
+
+cmd_stop() {
+  if ! is_running; then
+    echo "glm-bridge: no está en marcha"
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  local pid; pid="$(cat "$PID_FILE")"
+  echo "glm-bridge: deteniendo pid $pid ..."
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  rm -f "$PID_FILE"
+  echo "glm-bridge: detenido"
+}
+
+cmd_status() {
+  if is_running; then
+    echo "estado:   en marcha (pid $(cat "$PID_FILE"))"
+  else
+    echo "estado:   detenido"
+  fi
+  if h="$(health)"; then
+    echo "health:   $h"
+  else
+    echo "health:   sin respuesta en http://$HOST:$PORT"
+  fi
+  echo "log:      $OUT_LOG"
+}
+
+cmd_logs() {
+  tail -n "${1:-50}" "$OUT_LOG" 2>/dev/null || echo "sin logs aún"
+}
+
+cmd_follow() {
+  tail -f "$OUT_LOG"
+}
+
+case "${1:-status}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status)  cmd_status ;;
+  logs)    shift; cmd_logs "${1:-50}" ;;
+  follow)  cmd_follow ;;
+  health)  health || { echo "sin respuesta"; exit 1; } ;;
+  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health}"; exit 2 ;;
+esac

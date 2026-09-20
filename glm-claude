@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# ============================================================================
+# glm-claude — lanzador de Claude Code oficial sobre GLM vía GLM-Bridge.
+# Uso: glm-claude [argumentos normales de claude]
+#   glm-claude                  → REPL interactivo
+#   glm-claude -p "haz X"       → modo no interactivo
+#   glm-claude --resume         → continuar sesión
+# ============================================================================
+set -eu
+# resuelve symlinks para hallar el directorio real del script
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BRIDGE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PORT="${GLM_BRIDGE_PORT:-8787}"
+
+# 1) puente en marcha
+"$BRIDGE_DIR/glm-bridge" start >/dev/null 2>&1 || {
+  "$BRIDGE_DIR/glm-bridge" start  # reintento verboso para ver el error
+}
+
+# 2) entorno para Claude Code — todo el tráfico va al bridge local
+export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-glm-bridge-local}"
+export ANTHROPIC_API_KEY=""                      # fuerza uso de AUTH_TOKEN
+export ANTHROPIC_MODEL="${GLM_MODEL:-glm-5.3-flash}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ANTHROPIC_MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$ANTHROPIC_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$ANTHROPIC_MODEL"
+export ANTHROPIC_SMALL_FAST_MODEL="$ANTHROPIC_MODEL"
+
+# thinking nativo del bridge deshabilitado; CC tampoco lo pedirá
+export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-0}"
+
+# ventana de contexto: GLM en esta pasarela ~128k; evita el "unrecognized model"
+export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-128000}"
+
+# tráfico no esencial fuera (telemetría, statsig, updater) — el bridge es local
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export DISABLE_TELEMETRY=1
+export DISABLE_ERROR_REPORTING=1
+export DISABLE_AUTOUPDATER=1
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE="${CLAUDE_CODE_DISABLE_TERMINAL_TITLE:-1}"
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"
+
+# 3) onboarding ya completado (evita el asistente inicial en entornos headless)
+CLAUDE_JSON="${HOME}/.claude.json"
+if [ ! -f "$CLAUDE_JSON" ]; then
+  printf '{"hasCompletedOnboarding":true,"theme":"dark"}' > "$CLAUDE_JSON"
+fi
+
+exec claude "$@"

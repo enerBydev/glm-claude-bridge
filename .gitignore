@@ -1,0 +1,13 @@
+# runtime / local
+logs/
+run/
+*.log
+*.pid
+
+# credenciales (NUNCA commitear)
+.z-ai-config
+.env
+
+# sistema
+node_modules/
+.DS_Store
