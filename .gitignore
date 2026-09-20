@@ -1,17 +1,2 @@
-# --- proyecto GLM-Bridge (lo único que se publica) ---
-logs/
-run/
-*.log
-*.pid
-.z-ai-config
-.env
-
-# --- resto del workspace (NUNCA publicar) ---
 skills/
-upload/
-download/
-db/
-worklog.md
 node_modules/
-.DS_Store
-agent-ctx/
