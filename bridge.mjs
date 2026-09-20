@@ -13,7 +13,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadZaiConfig, upstreamHeaders, upstreamUrl } from './zai-config.mjs';
+import { loadZaiConfig, upstreamHeaders, upstreamUrl, upstreamVisionUrl } from './zai-config.mjs';
 import {
   buildUpstreamRequest,
   anthropicFromComplete,
@@ -39,6 +39,7 @@ const LOG_DIR = path.join(__dirname, 'logs');
 
 const cfg = loadZaiConfig();
 const UPSTREAM = upstreamUrl(cfg);
+const UPSTREAM_VISION = upstreamVisionUrl(cfg);
 const HEADERS = upstreamHeaders(cfg);
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -95,7 +96,7 @@ function readBody(req, limit = 256 * 1024 * 1024) {
 // ---------------------------------------------------------------------------
 const RETRYABLE = new Set([403, 429, 500, 502, 503, 504]);
 
-async function fetchUpstream(bodyObj, reqLog) {
+async function fetchUpstream(bodyObj, reqLog, targetUrl = UPSTREAM) {
   let lastErr = null;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
@@ -104,7 +105,7 @@ async function fetchUpstream(bodyObj, reqLog) {
       await new Promise((r) => setTimeout(r, wait));
     }
     try {
-      const res = await fetch(UPSTREAM, {
+      const res = await fetch(targetUrl, {
         method: 'POST',
         headers: HEADERS,
         body: JSON.stringify(bodyObj),
@@ -188,13 +189,20 @@ async function handleMessages(req, res) {
     toolHint: TOOL_HINT,
   });
 
+  // routing de visión: el gateway sólo acepta imágenes en /chat/completions/vision
+  const hasImages = (anthropicBody.messages || []).some(
+    (m) => Array.isArray(m.content) && m.content.some((b) => b && b.type === 'image')
+  );
+  const targetUrl = hasImages ? UPSTREAM_VISION : UPSTREAM;
+
   const shortId = Math.random().toString(36).slice(2, 8);
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
+  if (hasImages) reqLog(`routing: petición con imágenes -> ${targetUrl}`);
   reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
 
   let upRes;
   try {
-    upRes = await fetchUpstream(upstreamBody, reqLog);
+    upRes = await fetchUpstream(upstreamBody, reqLog, targetUrl);
   } catch (e) {
     reqLog(`ERROR upstream: ${e.message}`);
     const mapped = e.status ? mapUpstreamStatus(e.status) : { status: 502, type: 'api_error' };

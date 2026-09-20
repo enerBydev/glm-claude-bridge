@@ -116,6 +116,9 @@ README.es.md        Documentación en español
    the client disconnects — listen on `res.on('close')` + `writableEnded`.
 6. **`claude -p` without a TTY waits for stdin EOF** — redirect
    `< /dev/null` in scripts (interactive terminals are unaffected).
+7. **Images are only accepted on `/chat/completions/vision`** (plain
+   `/chat/completions` returns 400 for image parts). The bridge detects image
+   blocks and routes those requests automatically.
 
 ## Tested compatibility matrix
 
@@ -128,8 +131,10 @@ README.es.md        Documentación en español
 | Session `--continue` / `--resume` | ✅ |
 | `--append-system-prompt`, `--model` | ✅ |
 | Subagents (Task tool) | ✅ |
-| Image reading (vision) | ✅ |
-| Web search/fetch via server-side tools | ⚠️ not available on GLM gateway |
+| Image reading (vision) — auto-routed to `/chat/completions/vision` | ✅ |
+| Permission modes (`--permission-mode plan`) | ✅ |
+| WebFetch (client-side fetch + model summary) | ✅ |
+| Web search via server-side tools | ⚠️ not available on GLM gateway |
 | Extended thinking blocks | ⚠️ disabled by design (unsigned blocks unsupported) |
 
 ## License

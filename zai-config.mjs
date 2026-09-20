@@ -46,3 +46,8 @@ export function upstreamHeaders(cfg) {
 export function upstreamUrl(cfg) {
   return cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
 }
+
+/** Endpoint de visión: el gateway sólo acepta imágenes aquí. */
+export function upstreamVisionUrl(cfg) {
+  return cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions/vision';
+}
