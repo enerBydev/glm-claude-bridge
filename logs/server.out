@@ -1,0 +1,4 @@
+[2026-09-20T21:37:03.713Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-20T21:37:03.714Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-20T21:38:46.876Z] req rfbvt4 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T21:38:48.899Z] req rfbvt4 | OK stream | 2025ms | in=12960 out=17 tools=0 chars=69
