@@ -1,105 +1,137 @@
-# GLM-Bridge — Claude Code oficial sobre GLM
+# GLM-Bridge
 
-Solución original a medida que hace funcionar el **Claude Code oficial de Anthropic**
-(paquete npm `@anthropic-ai/claude-code`, sin forks ni repos de terceros) sobre el
-gateway GLM de Z.ai, reutilizando **el mismo token** que usa el agente de esta sesión.
+[![CI](https://github.com/enerBydev/glm-claude-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/enerBydev/glm-claude-bridge/actions/workflows/ci.yml)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen?logo=node.js)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos-lightgrey)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#)
 
-## Arquitectura
+**Run the official Claude Code CLI on GLM models** through a purpose-built local
+bridge that speaks Anthropic's Messages API on one side and GLM's
+OpenAI-compatible API on the other. No forks, no third-party routers — the
+official `@anthropic-ai/claude-code` npm package plus ~1,300 lines of original,
+dependency-free Node.js.
 
 ```
-┌──────────────┐  API Anthropic   ┌──────────────────────┐  API OpenAI/GLM   ┌──────────────────┐
-│ Claude Code  │ ───────────────▶ │   GLM-Bridge         │ ────────────────▶ │ internal-api.z.ai│
-│   oficial    │ ◀─────────────── │  (Node 24, 0 deps)   │ ◀──────────────── │  (token del      │
-└──────────────┘  /v1/messages    └──────────────────────┘ /chat/completions └── agente)────────┘
-   127.0.0.1:8787 · traduce streaming SSE, tool calling, visión, usage
+┌──────────────┐  Anthropic API   ┌──────────────────────┐  OpenAI/GLM API   ┌────────────────┐
+│ Claude Code  │ ───────────────▶ │     GLM-Bridge       │ ────────────────▶ │  GLM gateway   │
+│  (official)  │ ◀─────────────── │  (Node 24, zero deps)│ ◀──────────────── │ (your Z.ai     │
+└──────────────┘  /v1/messages    └──────────────────────┘ /chat/completions └── credentials)──┘
+                 http://127.0.0.1:8787
 ```
 
-El bridge expone la API de Messages de Anthropic y traduce en tiempo real:
+## Highlights
 
-- **Streaming SSE**: chunks `chat.completion.chunk` (estilo OpenAI) → eventos
-  `message_start` / `content_block_start` / `content_block_delta` / `content_block_stop`
-  / `message_delta` / `message_stop` (estilo Anthropic), incluidos
-  `input_json_delta` para argumentos de herramientas en streaming.
-- **Tool calling**: `tools`/`tool_choice`/`tool_use`/`tool_result` con resolución
-  de nombres (el gateway a veces traduce los nombres de herramientas; el bridge
-  los mapea de vuelta y añade un hint de sistema que lo impide en la fuente).
-- **No-streaming** y fallback si el upstream decide streamear sin pedírselo.
-- **count_tokens** con estimador local (CJK ~1 token/char, resto ~4 chars/token).
-- **Visión**: bloques `image` base64 → `image_url` data-URI.
-- **Robustez**: reintentos con backoff exponencial+jitter ante 403/429/5xx del
-  gateway (que aplica rate-limiting agresivo), watchdog de inactividad,
-  `max_tokens` clampeado a 32768, abort limpio si el cliente se desconecta.
+- **Official Claude Code, unmodified** — installed from npm, driven by env vars.
+- **Full streaming translation** — OpenAI-style `chat.completion.chunk` SSE is
+  re-emitted as native Anthropic events (`message_start`, `content_block_*`,
+  `input_json_delta`, `message_delta`, `message_stop`).
+- **Complete tool calling** — `tools`, `tool_choice`, `tool_use`, `tool_result`,
+  parallel calls, and streamed JSON arguments, with a **tool-name resolver**
+  that survives gateways which localize tool names (yes, that happens).
+- **Agentic loop verified** — Write / Read / Bash / Glob / Grep / Edit round
+  trips tested end-to-end against the real CLI.
+- **Token counting** — local `count_tokens` estimator (CJK-aware) so Claude
+  Code's context management works.
+- **Vision passthrough** — base64 image blocks become `image_url` data URIs.
+- **Production hardening** — exponential backoff with jitter on 403/429/5xx,
+  idle watchdog, clean client-disconnect handling, `max_tokens` clamping.
 
-## Uso rápido
+## Quick start
 
 ```bash
-glm-claude                      # REPL interactivo (equivale a `claude`)
-glm-claude -p "haz algo"        # modo no interativo
-glm-claude --resume             # continuar sesión
+# 1. Configure your Z.ai credentials (never committed, gitignored)
+sudo cp your-z-ai-config.json /etc/.z-ai-config
+#    shape: { "baseUrl": "https://<host>/v1", "apiKey": "...", "token": "...", "chatId": "...", "userId": "..." }
+
+# 2. Install the official CLI + link the launchers
+npm install -g @anthropic-ai/claude-code
+ln -sf "$(pwd)/glm-claude" ~/.local/bin/glm-claude
+ln -sf "$(pwd)/glm-bridge" ~/.local/bin/glm-bridge
+
+# 3. Go
+glm-claude                      # interactive REPL (same UX as `claude`)
+glm-claude -p "refactor this"   # non-interactive
+glm-bridge status               # bridge health / logs
 ```
 
-Los symlinks están en `~/.npm-global/bin/` (ya en el PATH).
+## What the launchers do
 
-## Control del bridge
-
-```bash
-glm-bridge start | stop | restart | status | logs [n] | follow | health
-```
-
-## Ficheros
-
-| Fichero | Papel |
+| Script | Purpose |
 |---|---|
-| `bridge.mjs` | Servidor HTTP, routing, SSE pump, reintentos, logging |
-| `translate.mjs` | Traducción pura Anthropic⇄GLM + máquina de estados de streaming |
-| `zai-config.mjs` | Carga de credenciales (`.z-ai-config`) y cabeceras upstream |
-| `glm-bridge` | CLI de control (start/stop/status/logs) |
-| `glm-claude` | Lanzador: arranca bridge, exporta env, `exec claude` |
-| `logs/` | `server.out` (log vivo) y `bridge-YYYY-MM-DD.log` (por día) |
+| `glm-claude` | Starts the bridge if needed, exports the full Claude Code env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model mapping, telemetry off), then `exec claude "$@"` |
+| `glm-bridge` | `start \| stop \| restart \| status \| logs [n] \| follow \| health` |
 
-## Variables de entorno
+## Repository layout
 
-| Variable | Defecto | Descripción |
+```
+bridge.mjs          HTTP server: routing, SSE pump, retries, logging
+translate.mjs       Pure Anthropic⇄GLM translation + streaming state machine
+zai-config.mjs      Credential loader (.z-ai-config) + upstream headers
+glm-bridge          Control CLI (start/stop/status/logs/health)
+glm-claude          One-command launcher for Claude Code
+scripts/debug-sse.mjs   Upstream SSE probe (raw bytes + parser simulation)
+tests/test-translate.mjs  26 unit tests for the translation layer
+.github/workflows/ci.yml  CI: syntax checks + tests across Node 20/22/24
+README.es.md        Documentación en español
+```
+
+## Configuration
+
+| Variable | Default | Description |
 |---|---|---|
-| `GLM_MODEL` | `glm-5.3-flash` | Modelo upstream (los `glm-*` pedidos pasan tal cual; el resto se mapea a este) |
-| `GLM_BRIDGE_PORT` / `GLM_BRIDGE_HOST` | `8787` / `127.0.0.1` | Escucha del bridge |
-| `GLM_THINKING` | `0` | `1` activa thinking upstream (deltas `reasoning_content` se ignoran de todos modos) |
-| `GLM_BRIDGE_TOOL_HINT` | on (`!=0`) | Hint anti-traducción de nombres de herramientas |
-| `GLM_BRIDGE_RETRIES` | `4` | Reintentos ante 403/429/5xx |
-| `GLM_BRIDGE_TOKEN` | vacío | Si se define, exige auth en el bridge |
-| `GLM_BRIDGE_IDLE_MS` | `300000` | Watchdog de inactividad del upstream |
-| `GLM_BRIDGE_DEBUG` | `0` | Log verboso de chunks del stream |
-| `ZAI_CONFIG_PATH` | auto | Override de la ruta del `.z-ai-config` |
+| `GLM_MODEL` | `glm-5.3-flash` | Upstream model. Non-`glm-*` requested models are mapped to it |
+| `GLM_BRIDGE_PORT` / `GLM_BRIDGE_HOST` | `8787` / `127.0.0.1` | Bridge listen address |
+| `GLM_THINKING` | `0` | `1` enables upstream thinking (reasoning deltas are still not forwarded) |
+| `GLM_BRIDGE_TOOL_HINT` | on | Appends a system note that forbids tool-name localization |
+| `GLM_BRIDGE_RETRIES` | `4` | Retries on 403/429/5xx (backoff + jitter) |
+| `GLM_BRIDGE_TOKEN` | empty | If set, requires this token on bridge requests |
+| `GLM_BRIDGE_IDLE_MS` | `300000` | Upstream idle watchdog |
+| `GLM_BRIDGE_DEBUG` | `0` | Verbose chunk logging |
+| `ZAI_CONFIG_PATH` | auto | Override credential file location (`/etc/.z-ai-config` → `~/.z-ai-config` → `./.z-ai-config`) |
 
-El lanzador `glm-claude` exporta además el entorno correcto para Claude Code
-(`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
-`ANTHROPIC_DEFAULT_*_MODEL`, telemetría off, `MAX_THINKING_TOKENS=0`,
+### Environment the launcher sets for Claude Code
+
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
+`ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
+`MAX_THINKING_TOKENS=0`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000`,
 `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`,
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000`).
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_TELEMETRY`,
+`DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, `API_TIMEOUT_MS=600000`.
 
-## Notas y hallazgos del reverse-engineering
+## Hard-won implementation notes
 
-1. **`X-Z-AI-From: Z` es obligatorio** en el gateway: sin esa cabecera responde
-   403 vacío (fue la causa de los primeros fallos). El bridge la envía siempre.
-2. El gateway reporta el modelo que sirve con su alias interno; el nombre
-   pedido se respeta como passthrough.
-3. Rate-limiting agresivo: peticiones rápidas encadenadas → 403. El backoff
-   del bridge lo absorbe de forma transparente.
-4. El gateway llegó a devolver un nombre de herramienta traducido
-   (`get_weather` → `Obtener clima`). Defensas: hint de sistema + resolución
-   por exacto/normalizado/contención/única-ofrecida/tokens, y degradación a
-   texto si no hay match (Claude Code nunca ve un `tool_use` inválido).
-5. En Node 24, los chunks de `fetch.body` son `Uint8Array`, no `Buffer`:
-   `.toString()` produce códigos de byte separados por comas. El bridge usa
-   `TextDecoder` con `stream: true` (UTF-8 multibyte seguro entre chunks).
-6. `claude -p` en contextos sin TTY espera EOF de stdin: redirigir con
-   `< /dev/null` en scripts (en terminal interactivo no afecta).
+1. **`X-Z-AI-From: Z` is mandatory** on this gateway; requests without it get
+   an empty 403. The bridge always sends it.
+2. **Aggressive rate limiting** — bursts of requests trigger empty 403s. The
+   retry layer absorbs them transparently.
+3. **Tool-name localization defense** — the gateway was observed rewriting
+   `get_weather` to `Obtener clima`. Countermeasures: system hint + resolver
+   (exact → normalized → containment → single-offered → token overlap) and a
+   safe degrade-to-text path so Claude Code never sees an invalid `tool_use`.
+4. **Node 24 fetch chunks are `Uint8Array`**, not `Buffer` — `.toString()`
+   yields comma-joined byte codes. The bridge decodes with `TextDecoder`
+   (`stream: true`) so multi-byte UTF-8 split across chunks is safe.
+5. **`req.on('close')` fires when the request body has been read**, not when
+   the client disconnects — listen on `res.on('close')` + `writableEnded`.
+6. **`claude -p` without a TTY waits for stdin EOF** — redirect
+   `< /dev/null` in scripts (interactive terminals are unaffected).
 
-## Verificación realizada
+## Tested compatibility matrix
 
-- 26 tests unitarios de traducción (`scripts/test-translate.mjs`): OK
-- No-streaming, streaming SSE, count_tokens: OK
-- Bucle agéntico completo con 20 herramientas: Write + Read + Bash OK
-  (el modelo creó ficheros, los leyó y reportó contenido real)
-- Arranque en frío vía `glm-claude` (bridge on-demand): OK
-- Ciclo `glm-bridge start/stop/restart/status` vía symlinks: OK
+| Claude Code feature | Status |
+|---|---|
+| Interactive REPL / `-p` one-shot | ✅ |
+| Streaming output | ✅ |
+| Tool loop: Write, Read, Bash, Glob, Grep, Edit | ✅ |
+| `--output-format json` / `stream-json` | ✅ |
+| Session `--continue` / `--resume` | ✅ |
+| `--append-system-prompt`, `--model` | ✅ |
+| Subagents (Task tool) | ✅ |
+| Image reading (vision) | ✅ |
+| Web search/fetch via server-side tools | ⚠️ not available on GLM gateway |
+| Extended thinking blocks | ⚠️ disabled by design (unsigned blocks unsupported) |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
