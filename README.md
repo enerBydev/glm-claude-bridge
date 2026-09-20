@@ -137,6 +137,15 @@ README.es.md        Documentación en español
 | Web search via server-side tools | ⚠️ not available on GLM gateway |
 | Extended thinking blocks | ⚠️ disabled by design (unsigned blocks unsupported) |
 
+## CI note
+
+The workflow (`.github/workflows/ci.yml`) is syntax-checked and every step
+passes in a clean clone (Node 20/22/24). If runs fail within seconds with no
+steps executed on a **private** repo, it is the account's Actions billing /
+spending limit, not the code: fix it under *Settings → Billing and plans*
+(verify payment method / raise the spending limit), or make the repository
+public, where Actions are free.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
