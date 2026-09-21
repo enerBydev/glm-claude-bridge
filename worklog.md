@@ -209,3 +209,22 @@ Work Log:
 Stage Summary:
 - ENTREGADO: pieza instalable portable — "git clone + ./install.sh + glm-claude" en cualquier sesión de chat.z.ai funciona de manera nativa SIN reconfigurar nada y SIN hardcodear claves: todo se resuelve dinámicamente del fichero de nacimiento de la sesión (/etc/.z-ai-config) con recarga por mtime por petición (credenciales, baseUrl y modelo).
 - Pendiente: push a enerBydev/glm-claude-bridge requiere token GitHub fresco (sin credenciales en el entorno); commit local listo. E2E agéntico completo (glm-claude -p) pendiente de reset de cuota (~16:00 UTC): la ruta de código v4 es la misma que v3 salvo resolución dinámica ya validada hasta el gateway.
+
+---
+Task ID: 8-push-ci-diagnostico
+Agent: Super Z (principal)
+Task: Push del commit 5cae059 con token del usuario + diagnóstico del fallo de CI
+
+Work Log:
+- PUSH EXITOSO y verificado: refs/heads/main remoto = 5cae059a3a7c0609e44e4fcb0d5171110e74c3f0 = local. Token usado inline en el comando push y en las llamadas API; NUNCA escrito a .git/config ni a ficheros (remoto restaurado a URL sin credenciales; verificado con git remote -v).
+- CI REPORTA failure en el push. Investigación forense vía API:
+  * 6/6 runs (5 históricos + 1 re-disparado vía workflow_dispatch 204) → failure.
+  * TODOS con patrón idéntico: jobs con started→ended en 1-2s, steps: 0, logs 404 BlobNotFound (nunca se generaron).
+  * Actions habilitado (permissions: enabled=true, allowed_actions=all).
+  * Interpretación: el runner JAMÁS ejecutó ni el checkout → bloqueo a nivel de cuenta, no de código. Firma típica de límite de gasto/minutos en repos PRIVADOS (plan free: 2000 min/mes; el repo mario-nuxt-pixel es público y sus Actions sí corrieron = gratis). El endpoint de billing no consultable con este PAT (403).
+  * El código NO es la causa: verificado localmente el pipeline completo (syntax checks OK, modos de fichero 100755 en el índice git, smoke credential-loader y StreamTranslator OK, 37/37 tests, instalador E2E 2x).
+- Visibilidad del repo: PRIVATE — además de bloquear la cuota de Actions, obliga a autenticar el `git clone` en nuevas sesiones, contradiciendo el objetivo "descargar e instalar en cualquier sesión".
+
+Stage Summary:
+- glm-claude-bridge v4 portable PUSHEADO y confirmado en GitHub (main = 5cae059).
+- CI en failure por bloqueo de cuenta (0 steps ejecutados en 6/6 runs): resolver con (a) repo público → Actions ilimitado gratis, o (b) revisar https://github.com/settings/billing (límite de gasto/minutos). Recomendación: (a) — también habilita clone sin token para el flujo de instalación portable.
