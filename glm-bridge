@@ -128,7 +128,8 @@ cmd_doctor() {
 
   section "Credenciales de sesión (nacimiento de la sesión, cero hardcoding)"
   local cfg_path="${ZAI_CONFIG_PATH:-}"
-  [ -z "$cfg_path" ] && [ -f /etc/.z-ai-config ] && cfg_path=/etc/.z-ai-config
+  # QA: GLM_QA_HIDE_SESSION=1 simula un entorno sin sesión (omite /etc)
+  if [ "${GLM_QA_HIDE_SESSION:-}" != "1" ] && [ -z "$cfg_path" ] && [ -f /etc/.z-ai-config ]; then cfg_path=/etc/.z-ai-config; fi
   [ -z "$cfg_path" ] && [ -f "$HOME/.z-ai-config" ] && cfg_path="$HOME/.z-ai-config"
   [ -z "$cfg_path" ] && [ -f ./.z-ai-config ] && cfg_path="./.z-ai-config"
   if [ -n "$cfg_path" ] && [ -f "$cfg_path" ]; then

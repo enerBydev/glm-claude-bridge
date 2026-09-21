@@ -84,6 +84,38 @@ headers **per request** — and since v4 the upstream URL and model are also
 resolved per request. If Z.ai rotates the token mid-session, the next request
 already uses the fresh one. No re-edits, no restarts, no secrets in git.
 
+## QA — automated, offline, zero quota
+
+```bash
+./qa.sh            # full suite (6 stages)
+./qa.sh --fast     # syntax + unit tests + smokes only
+```
+
+`qa.sh` runs the **entire quality gate without a real gateway and without
+spending a single API call** — it works in development, in CI (GitHub Actions
+or any other), and after installing in a fresh session:
+
+1. **Syntax** — `node --check` on all modules + `bash -n` + executable bits.
+2. **Unit tests** — 37 translation-layer assertions.
+3. **Smokes** — credential loader fails clearly with no session
+   (`GLM_QA_HIDE_SESSION=1` testability seam); StreamTranslator emits a valid
+   Anthropic SSE sequence.
+4. **Hermetic installer preflight** — runs `install.sh --without-claude` inside
+   a temporary `$HOME` with no session and no credentials; verifies the shims
+   are created and the absence of a session is warned, not fatal.
+5. **E2E against a mock gateway** (`tests/mock-upstream.mjs`, deterministic) —
+   14 scenarios through the REAL bridge process: message round-trip, model
+   mapping, tool calling (JSON arguments), thinking blocks, synthetic SSE
+   streaming, `count_tokens`, vision routing, **live credential rotation**
+   (new token used on the very next request, no restart), **live baseUrl
+   rotation** (v4), fail-fast 429 when daily quota is 0 (exactly ONE upstream
+   attempt), 401 mapping and post-failure recovery.
+6. **Doctor** against the live session (informational).
+
+The mock gateway also supports failure modes (`always-429`, `auth-required`)
+and full request capture (`/__mock/requests`) for asserting exactly what the
+bridge sends — headers included.
+
 ## Manual setup (without the installer)
 
 ```bash

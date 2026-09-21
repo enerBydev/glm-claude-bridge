@@ -1,6 +1,8 @@
 // ============================================================================
 // zai-config.mjs — Carga las credenciales Z.ai (el mismo token del agente)
 // Orden: ZAI_CONFIG_PATH > /etc/.z-ai-config > ~/.z-ai-config > ./.z-ai-config
+// QA: con GLM_QA_HIDE_SESSION=1 se omite /etc/.z-ai-config (seam de
+// testabilidad para reproducir localmente un entorno "sin sesión").
 //
 // v3 (session-born): el runtime de la plataforma RE-INYECTA el token JWT de
 // sesión (X-Token) y la identidad del chat (X-Chat-Id/X-User-Id) en
@@ -16,9 +18,10 @@ import path from 'node:path';
 import os from 'node:os';
 
 export function loadZaiConfig() {
+  const hideEtc = process.env.GLM_QA_HIDE_SESSION === '1';
   const candidates = [
     process.env.ZAI_CONFIG_PATH,
-    '/etc/.z-ai-config',
+    hideEtc ? null : '/etc/.z-ai-config',
     path.join(os.homedir(), '.z-ai-config'),
     path.join(process.cwd(), '.z-ai-config'),
   ].filter(Boolean);
@@ -69,9 +72,10 @@ export function createConfigProvider() {
 }
 
 function configPath() {
+  const hideEtc = process.env.GLM_QA_HIDE_SESSION === '1';
   const candidates = [
     process.env.ZAI_CONFIG_PATH,
-    '/etc/.z-ai-config',
+    hideEtc ? null : '/etc/.z-ai-config',
     path.join(os.homedir(), '.z-ai-config'),
     path.join(process.cwd(), '.z-ai-config'),
   ].filter(Boolean);

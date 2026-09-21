@@ -228,3 +228,24 @@ Work Log:
 Stage Summary:
 - glm-claude-bridge v4 portable PUSHEADO y confirmado en GitHub (main = 5cae059).
 - CI en failure por bloqueo de cuenta (0 steps ejecutados en 6/6 runs): resolver con (a) repo público → Actions ilimitado gratis, o (b) revisar https://github.com/settings/billing (límite de gasto/minutos). Recomendación: (a) — también habilita clone sin token para el flujo de instalación portable.
+
+---
+Task ID: 9-qa-automatizado
+Agent: Super Z (principal)
+Task: Repo público + QA automatizado offline (mock del gateway) independiente de GitHub Actions y de la cuota real
+
+Work Log:
+- REPO PÚBLICO confirmado vía API (private:false) — el clone sin token ya funciona en cualquier sesión.
+- CI REVIVIÓ con el repo público: run 35559944884 → SUCCESS en Node 20/22/24 (todos los steps verdes incluido el installer preflight). La hipótesis del rate-limit de minutos privados era correcta.
+- MOCK DEL GATEWAY (tests/mock-upstream.mjs, nuevo): gateway GLM simulado determinista y sin cuota — marcadores en el prompt (MOCK:TOOL/MOCK:THINK/eco), routing /chat/completions + /chat/completions/vision (acepta prefijo /v1 del baseUrl real), SSE chunks nativos, modos de fallo always-429 (con cabeceras de cuota a 0) y auth-required (401 missing X-Token), control-plane /__mock/mode, /__mock/reset y captura total de peticiones /__mock/requests (URL+headers+body) para assertions.
+- E2E (tests/e2e.mjs, nuevo): 14 escenarios contra el proceso REAL del bridge con .z-ai-config temporal inyectada por ZAI_CONFIG_PATH: health+identidad, eco+headers de sesión exactos, mapeo de modelos (claude-*→sesión, glm-*→literal), tool calling completo, thinking nativo (bloque antes del texto + signature), streaming SSE sintético (message_start→…→message_stop), streaming con input_json_delta, count_tokens, routing visión, ROTACIÓN DE CREDENCIALES EN VIVO (JWT-B en la siguiente petición sin reiniciar — core v3), ROTACIÓN DE BASEURL EN VIVO (mock2 — core v4), fail-fast 429 con daily=0 (exactamente 1 intento upstream), 401→authentication_error, y recuperación post-fallo. 14/14 VERDE, exit 0, puertos limpios.
+- SEAM DE TESTABILIDAD GLM_QA_HIDE_SESSION=1 en zai-config.mjs + install.sh + glm-bridge doctor: omite /etc/.z-ai-config para reproducir un entorno "sin sesión" aunque la máquina real lo tenga.
+- QA.SH (nuevo): suite de un comando con 6 etapas — (1) sintaxis node+bash+bits ejecutables, (2) 37 unitarios, (3) smokes (loader sin sesión + StreamTranslator SSE), (4) preflight hermético del instalador en $HOME temporal sin sesión (install.sh --without-claude → shims creados + aviso de sesión ausente), (5) E2E mock completo, (6) doctor informativo. Modo --fast. Trap de limpieza solo en fallo. TODO VERDE, exit 0.
+- CI SIMPLIFICADO: los steps granulares (unitarios + 2 smokes + installer preflight) se sustituyen por un único "Full QA suite (./qa.sh)" — la matriz Node 20/22/24 se conserva.
+- BUGS CAZADOS: (a) mock strict-path 404 por el /v1 del baseUrl real → normalización de ruta; (b) zombies entre runs del E2E (EPIPE por head en el pipe mataba al runner sin ejecutar el finally) → killAll síncrono en process.on('exit') + uncaughtException + SIGKILL de respaldo + pre-limpieza pkill; (c) reset del mock restauraba el modo después de fijarlo en el test 429 → reordenado; (d) expectativa de URL cruda con /v1 → endsWith; (e) id de tool del mock sin prefijo toolu_ → toolu_mock_1.
+- DOCS: sección "QA — automatizado, offline, cero cuota" en README.md y README.es.md.
+
+Stage Summary:
+- ENTREGADO: QA automatizado de un comando (./qa.sh) que valida TODO el bridge (incluidas las features core v3/v4 de rotación en vivo) de forma determinista, offline y con cero cuota — el mismo ./qa.sh corre local, en CI y tras instalar en cualquier sesión nueva.
+- El CI de GitHub ya está verde (repo público) y ahora ejecuta ./qa.sh como única puerta de calidad.
+- Mock del gateway reutilizable para futuros tests agénticos sin cuota (p.ej. CC contra mock con escenarios scriptados).

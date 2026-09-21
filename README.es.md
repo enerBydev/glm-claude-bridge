@@ -53,6 +53,38 @@ upstream y el modelo también se resuelven por petición. Si Z.ai rota el token 
 media sesión, la siguiente petición ya usa el nuevo. Sin re-edits, sin
 reinicios, sin secretos en git.
 
+## QA — automatizado, offline, cero cuota
+
+```bash
+./qa.sh            # suite completa (6 etapas)
+./qa.sh --fast     # solo sintaxis + unitarios + smokes
+```
+
+`qa.sh` ejecuta **todo el control de calidad sin gateway real y sin gastar ni
+una llamada de API** — sirve para desarrollo, para CI (GitHub Actions u otro)
+y para validar tras instalar en una sesión nueva:
+
+1. **Sintaxis** — `node --check` de todos los módulos + `bash -n` + bits ejecutables.
+2. **Unitarios** — 37 aserciones de la capa de traducción.
+3. **Smokes** — el loader de credenciales falla con mensaje claro sin sesión
+   (seam de testabilidad `GLM_QA_HIDE_SESSION=1`); StreamTranslator emite una
+   secuencia SSE Anthropic válida.
+4. **Preflight hermético del instalador** — ejecuta `install.sh --without-claude`
+   dentro de un `$HOME` temporal sin sesión ni credenciales; verifica que los
+   shims se crean y que la ausencia de sesión avisa sin morir.
+5. **E2E contra un mock del gateway** (`tests/mock-upstream.mjs`, determinista) —
+   14 escenarios a través del proceso REAL del bridge: ida y vuelta de
+   mensajes, mapeo de modelos, tool calling (JSON), bloques thinking,
+   streaming SSE sintético, `count_tokens`, routing de visión,
+   **rotación de credenciales en vivo** (el token nuevo se usa en la siguiente
+   petición, sin reiniciar), **rotación de baseUrl en vivo** (v4), fail-fast 429
+   con daily=0 (exactamente UN intento upstream), mapeo 401 y recuperación.
+6. **Doctor** contra la sesión real (informativo).
+
+El mock del gateway soporta modos de fallo (`always-429`, `auth-required`) y
+captura completa de peticiones (`/__mock/requests`) para afirmar exactamente
+qué envía el bridge — cabeceras incluidas.
+
 ## Arquitectura
 
 ```

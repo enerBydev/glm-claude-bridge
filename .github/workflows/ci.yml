@@ -43,45 +43,5 @@ jobs:
           # help sin romper
           ./glm-bridge 2>&1 | grep -q "uso:" || echo "warn: ayuda no detectada"
 
-      - name: Installer preflight (no z.ai session expected in CI)
-        run: |
-          # el instalador debe ejecutarse sin sesión z.ai Y AVISARLO, sin morir
-          # antes de tiempo, y dejar shims funcionales con claude ausente
-          # (--without-claude evita tocar el runner)
-          ./install.sh --without-claude || exit 1
-          test -x "$HOME/.local/bin/glm-bridge" || { echo 'shim glm-bridge ausente'; exit 1; }
-          "$HOME/.local/bin/glm-bridge" doctor && echo 'doctor OK (sin sesión z.ai, advertencias esperadas)' || true
-
-      - name: Translation unit tests (37 assertions)
-        run: node tests/test-translate.mjs
-
-      - name: Smoke — credential loader fails clearly without creds
-        run: |
-          node -e "
-            import('./zai-config.mjs').then(m => {
-              try { m.loadZaiConfig(); console.log('creds presentes (runner no deberia tenerlas)'); }
-              catch (e) {
-                if (/No se encontr/.test(e.message)) { console.log('OK: error esperado sin credenciales'); process.exit(0); }
-                console.error('FALLO:', e.message); process.exit(1);
-              }
-            });
-          "
-
-      - name: Smoke — StreamTranslator produces valid Anthropic SSE sequence
-        run: |
-          node -e "
-            import('./translate.mjs').then(({ StreamTranslator }) => {
-              const tr = new StreamTranslator({ requestedModel: 'glm-5.3-flash', offeredNames: ['Bash'], inputTokensEstimate: 1 });
-              const evs = [
-                ...tr.start(),
-                ...tr.handleChunk({ choices: [{ delta: { content: 'hi' } }] }),
-                ...tr.handleChunk({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'Bash', arguments: '{\\\"command\\\":\\\"ls\\\"}' } }] } }] }),
-                ...tr.finalize(),
-              ];
-              const names = evs.map(e => e.event);
-              for (const e of evs) JSON.stringify(e.data);
-              if (names[0] !== 'message_start' || names[names.length-1] !== 'message_stop') throw new Error('secuencia invalida: ' + names.join(','));
-              if (!names.includes('input_json_delta' ) && !evs.some(e => e.data && e.data.delta && e.data.delta.type === 'input_json_delta')) throw new Error('falta input_json_delta');
-              console.log('OK: ' + evs.length + ' eventos, secuencia Anthropic valida');
-            });
-          "
+      - name: Full QA suite (./qa.sh — sintaxis + unitarios + smokes + instalador hermético + E2E mock, cero cuota)
+        run: ./qa.sh

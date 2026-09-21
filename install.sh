@@ -53,7 +53,8 @@ echo "╚═══════════════════════�
 # ── 1) detectar la sesión z.ai (dinámico, NUNCA hardcodeado) ────────────────
 say "[1/5] detectando la sesión de chat.z.ai…"
 CFG_PATH="${ZAI_CONFIG_PATH:-}"
-[ -z "$CFG_PATH" ] && [ -f /etc/.z-ai-config ] && CFG_PATH=/etc/.z-ai-config
+# QA: GLM_QA_HIDE_SESSION=1 simula un entorno sin sesión (omite /etc)
+if [ "${GLM_QA_HIDE_SESSION:-}" != "1" ] && [ -z "$CFG_PATH" ] && [ -f /etc/.z-ai-config ]; then CFG_PATH=/etc/.z-ai-config; fi
 [ -z "$CFG_PATH" ] && [ -f "$HOME/.z-ai-config" ] && CFG_PATH="$HOME/.z-ai-config"
 [ -z "$CFG_PATH" ] && [ -f "$REPO_DIR/.z-ai-config" ] && CFG_PATH="$REPO_DIR/.z-ai-config"
 if [ -n "$CFG_PATH" ] && [ -f "$CFG_PATH" ]; then
