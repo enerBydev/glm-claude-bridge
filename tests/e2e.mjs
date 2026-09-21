@@ -123,6 +123,7 @@ async function main() {
     GLM_BRIDGE_MIN_INTERVAL_MS: '0',
     GLM_BRIDGE_RETRIES: '2',
     GLM_BRIDGE_RETRY_BASE_MS: '50',
+    GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS: '0', // circuito OFF en el bridge principal: los tests 12-17 no lo ejercitan (test 18 usa un bridge dedicado)
     GLM_MODEL: 'glm-5.3-flash',
   });
   if (!await waitHttp(`${B_URL}/health`)) throw new Error('bridge no arrancó');
@@ -329,6 +330,51 @@ async function main() {
     assert.equal(tool.input.run_in_background, false);
     assert.match(tool.input.prompt, /MOCK-SUBAGENT-OK/);
     assert.equal(tool.input.subagent_type, 'general-purpose');
+  });
+
+  // 18 ── circuit breaker: daily=0 → 429 local SIN upstream durante cooldown ---
+  await test('circuit breaker: daily=0 → 429 local sin upstream durante el cooldown, sondeo al expirar', async () => {
+    await mockReset(M2);
+    await mockMode(M2, 'always-429');
+    const CB_PORT = 8795;
+    const CB_URL = `http://127.0.0.1:${CB_PORT}`;
+    const cbCfg = path.join(tmpDir, 'cb-.z-ai-config');
+    fs.writeFileSync(cbCfg, JSON.stringify({ baseUrl: `${M2}/v1`, apiKey: 'Z.ai', token: 'JWT-CB', chatId: 'chat-e2e-cb', userId: 'user-e2e' }));
+    startProc('bridge-cb', process.execPath, [path.join(ROOT, 'bridge.mjs'), '--glm-e2e'], {
+      GLM_BRIDGE_PORT: String(CB_PORT),
+      ZAI_CONFIG_PATH: cbCfg,
+      GLM_BRIDGE_MIN_INTERVAL_MS: '0',
+      GLM_BRIDGE_RETRIES: '2',
+      GLM_BRIDGE_RETRY_BASE_MS: '50',
+      GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS: '2500',
+      GLM_MODEL: 'glm-5.3-flash',
+    });
+    if (!await waitHttp(`${CB_URL}/health`)) throw new Error('bridge-cb no arrancó');
+    const cbPost = (content) => fetch(`${CB_URL}/v1/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'glm-5.3-flash', max_tokens: 20, messages: [{ role: 'user', content }] }),
+    });
+    // 1ª petición: cruza al upstream (1 intento, fail-fast) y ARMA el circuito
+    const r1 = await cbPost('cb-1');
+    assert.equal(r1.status, 429);
+    // 2ª y 3ª DURANTE el cooldown: 429 local, upstream intacto (coste de cuota cero)
+    const r2 = await cbPost('cb-2');
+    const r3 = await cbPost('cb-3');
+    assert.equal(r2.status, 429);
+    assert.equal(r3.status, 429);
+    assert.match(r2.headers.get('content-type') || '', /json/);
+    let caps = await mockCapture(M2);
+    assert.equal(caps.length, 1, `durante el cooldown esperaba 1 intento upstream total, hubo ${caps.length}`);
+    // /health refleja el circuito abierto
+    const h = await (await fetch(`${CB_URL}/health`)).json();
+    assert.ok(h.circuit && h.circuit.key_daily_open_until, 'health debe exponer circuito abierto');
+    // expira el cooldown → 1 petición de sondeo cruza al upstream (y re-arma)
+    await new Promise((r) => setTimeout(r, 2700));
+    const r4 = await cbPost('cb-4');
+    assert.equal(r4.status, 429);
+    caps = await mockCapture(M2);
+    assert.equal(caps.length, 2, `tras el cooldown esperaba 2 intentos upstream total, hubo ${caps.length}`);
+    await mockMode(M2, 'normal');
   });
 
   console.log(`\n${passed} pasadas, ${results.filter((r) => r.startsWith('  ✗')).length} fallos`);

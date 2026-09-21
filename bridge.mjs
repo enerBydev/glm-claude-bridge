@@ -99,6 +99,29 @@ let lastEchoModel = null;
 // última cuota observada (buckets key-level y user-level)
 let lastQuota = null;
 
+// ---------------------------------------------------------------------------
+// Circuit breaker de cuota: cuando el gateway declara un bucket daily a 0,
+// cada intento adicional (incluidos los reintentos silenciosos de CC) QUEMA
+// cuota user: cada 429 descuenta 1 de user-daily y 1 de user-10min (verificado
+// en vivo). Durante el cooldown el bridge responde 429 EN LOCAL, sin tocar el
+// upstream: los reintentos de CC rebotan con coste cero para la cuota.
+// Al expirar deja pasar 1 petición de sondeo; si el bucket sigue a 0, re-arma.
+// ---------------------------------------------------------------------------
+const DAILY_COOLDOWN_MS = Number(process.env.GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS ?? 600000); // 10 min
+const exhaustedUntil = { keyDaily: 0, userDaily: 0 };
+function armCircuit(q) {
+  if (DAILY_COOLDOWN_MS <= 0) return;
+  const now = Date.now();
+  if (q.keyDailyRemaining === 0) exhaustedUntil.keyDaily = now + DAILY_COOLDOWN_MS;
+  if (q.userDailyRemaining === 0) exhaustedUntil.userDaily = now + DAILY_COOLDOWN_MS;
+}
+function circuitOpen() {
+  const now = Date.now();
+  if (exhaustedUntil.keyDaily > now) return { open: true, bucket: 'key-daily', until: exhaustedUntil.keyDaily };
+  if (exhaustedUntil.userDaily > now) return { open: true, bucket: 'user-daily', until: exhaustedUntil.userDaily };
+  return { open: false };
+}
+
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, `bridge-${new Date().toISOString().slice(0, 10)}.log`);
 
@@ -174,7 +197,8 @@ async function fetchUpstream(bodyObj, reqLog, targetUrl) {
         if (res.status === 429) {
           const q = quotaOf(res);
           if (q.keyDailyRemaining === 0 || q.userDailyRemaining === 0) {
-            reqLog(`429 con daily agotado (key=${q.keyDailyRemaining} user=${q.userDailyRemaining}): fail-fast, sin reintentos`);
+            armCircuit(q);
+            reqLog(`429 con daily agotado (key=${q.keyDailyRemaining} user=${q.userDailyRemaining}): fail-fast + circuito abierto ${DAILY_COOLDOWN_MS}ms, sin reintentos`);
             lastErr = { kind: 'http', status: 429, txt: 'daily agotado' };
             break;
           }
@@ -289,6 +313,18 @@ async function handleMessages(req, res) {
   if (hasImages) reqLog(`routing: petición con imágenes -> ${targetUrl}`);
   reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | thinking=${effectiveThinking ? 'on' : 'off'}${requestThinking && !THINKING ? '(req)' : ''} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
 
+  // circuit breaker: bucket daily agotado => 429 local SIN tocar upstream
+  const circuit = circuitOpen();
+  if (circuit.open) {
+    const untilIso = new Date(circuit.until).toISOString();
+    reqLog(`circuito abierto (${circuit.bucket} hasta ${untilIso}): 429 local, upstream intacto`);
+    return anthropicError(res, 429, 'rate_limit_error',
+      `GLM-Bridge: cuota diaria del gateway agotada (${circuit.bucket}). ` +
+      `Cada intento adicional quemaría cuota user, así que el bridge responde en local hasta ${untilIso}. ` +
+      `Nota: este bucket (clave 'Z.ai') es compartido por los sandboxes de la plataforma; ` +
+      `el chat interactivo de la sesión NO usa este gateway.`);
+  }
+
   // throttle anti-WAF: separar inicios de peticiones upstream
   if (MIN_INTERVAL_MS > 0) {
     const now = Date.now();
@@ -314,7 +350,8 @@ async function handleMessages(req, res) {
     reqLog(`upstream ${upRes.status}: ${txt.slice(0, 300)}`);
     if (upRes.status === 429) {
       const q = quotaOf(upRes);
-      reqLog(`429 buckets: key_daily=${q.keyDailyRemaining} user_10min=${q.user10minRemaining}/${q.user10minLimit} user_daily=${q.userDailyRemaining}`);
+      armCircuit(q);
+      reqLog(`429 buckets: key_daily=${q.keyDailyRemaining} user_10min=${q.user10minRemaining}/${q.user10minLimit} user_daily=${q.userDailyRemaining}${circuitOpen().open ? ' (circuito armado)' : ''}`);
     }
     const mapped = mapUpstreamStatus(upRes.status);
     return anthropicError(res, mapped.status, mapped.type, `upstream GLM ${upRes.status}: ${txt.slice(0, 300)}`);
@@ -477,6 +514,11 @@ const server = http.createServer(async (req, res) => {
           config_mtime: c._mtime ? new Date(c._mtime).toISOString() : null,
         } : null,
         quota_last_seen: lastQuota,
+        circuit: {
+          cooldown_ms: DAILY_COOLDOWN_MS,
+          key_daily_open_until: exhaustedUntil.keyDaily > Date.now() ? new Date(exhaustedUntil.keyDaily).toISOString() : null,
+          user_daily_open_until: exhaustedUntil.userDaily > Date.now() ? new Date(exhaustedUntil.userDaily).toISOString() : null,
+        },
         pid: process.pid,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });

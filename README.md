@@ -195,6 +195,7 @@ README.es.md        Documentación en español
 | `GLM_THINKING` | `0` | `1` enables upstream thinking (reasoning deltas are still not forwarded) |
 | `GLM_BRIDGE_TOOL_HINT` | on | Appends a system note that forbids tool-name localization |
 | `GLM_BRIDGE_RETRIES` | `4` | Retries on 403/429/5xx (backoff + jitter) |
+| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Quota circuit breaker: once a daily bucket reads 0, reply 429 locally (upstream untouched) for this cooldown; `0` disables |
 | `GLM_BRIDGE_TOKEN` | empty | If set, requires this token on bridge requests |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Upstream idle watchdog |
 | `GLM_BRIDGE_DEBUG` | `0` | Verbose chunk logging |
@@ -236,7 +237,12 @@ mapping, behavioral fingerprinting) says:
    echoing `glm-5v-turbo`).
 5. **Real quotas** (exposed via `x-ratelimit-*` headers): 2 QPS,
    30 requests / 10 min and 300 / day per bucket — size your agentic usage
-   accordingly.
+   accordingly. Heads-up: the key-level bucket belongs to the `Z.ai` key (a
+   global literal `/start.sh` writes into EVERY sandbox), so those 300/day
+   are shared across platform sessions. Your interactive chat does NOT go
+   through this gateway (chat inference happens platform-side), which is why
+   the chat keeps working while the bridge sees 429: **different doors with
+   different quotas**, same session identity.
 
 **Practical takeaway**: `GLM_MODEL` / `--model` configure the *label* Claude
 Code sees and requests (forwarded verbatim, so it future-proofs you if the
@@ -271,7 +277,12 @@ Therefore bridge **v3**:
    the next request instead of going stale (the root cause of mysterious 401s
    in v2 after a session refresh).
 2. **`429` fail-fast** when a daily bucket is at 0 — blind retries only burn
-   the user-level bucket (each 429 decrements it).
+   the user-level bucket (each 429 decrements it; verified live: two
+   consecutive 429s took user-daily 31→30→29). On top of that a **quota
+   circuit breaker** (`GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS`, 10 min default)
+   answers 429 **locally** during the cooldown — Claude Code's silent
+   retries bounce at zero quota cost; after expiry exactly one probe request
+   crosses to the upstream. State visible in `/health` (`circuit`).
 3. **Thinking support**: honors `thinking: {type:'enabled'}` from Claude Code
    (or `GLM_THINKING=1`), maps upstream `reasoning_content` to Anthropic
    `thinking` blocks (with `thinking_delta` / `signature_delta` in streams),

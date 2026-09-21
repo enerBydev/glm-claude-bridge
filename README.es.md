@@ -187,6 +187,7 @@ fichero de sesión, Claude Code, shims en PATH, bridge) SIN gastar cuota de API.
 | `GLM_THINKING` | `0` | `1` activa thinking upstream (reasoning_content se traduce a bloques thinking de Anthropic) |
 | `GLM_BRIDGE_TOOL_HINT` | on (`!=0`) | Hint anti-traducción de nombres de herramientas |
 | `GLM_BRIDGE_RETRIES` | `4` | Reintentos ante 403/429/5xx |
+| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Circuit breaker: con un bucket daily a 0, responde 429 en local (sin tocar upstream) durante este cooldown; `0` lo desactiva |
 | `GLM_BRIDGE_TOKEN` | vacío | Si se define, exige auth en el bridge |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Watchdog de inactividad del upstream |
 | `GLM_BRIDGE_DEBUG` | `0` | Log verboso de chunks del stream |
@@ -239,6 +240,12 @@ forense completa (SDK, entorno, superficie API, fingerprint conductual):
    clase de modelo, eco `glm-5v-turbo`).
 5. **Cuotas reales** (exponen los headers `x-ratelimit-*`): 2 QPS,
    30 peticiones/10 min y 300/día por bucket — dimensiona el uso agéntico.
+   OJO: el bucket key-level pertenece a la clave `Z.ai` (literal global que
+   `/start.sh` escribe en TODOS los sandboxes) → esos 300/día se comparten
+   entre sesiones de la plataforma. Tu chat interactivo NO pasa por este
+   gateway (la inferencia del chat ocurre platform-side), por eso el chat
+   sigue funcionando aunque el bridge vea 429: son **puertas distintas con
+   cuotas distintas**, misma identidad de sesión.
 
 **Conclusión práctica**: `GLM_MODEL` / `--model` configuran la *etiqueta* que
 Claude Code ve y pide (y que el bridge reenviará literal si el gateway algún
@@ -273,7 +280,12 @@ Por eso el bridge **v3**:
    siguiente petición en vez de quedarse obsoleto (causa raíz de los 401
    misteriosos de la v2 tras un refresco de sesión).
 2. **Fail-fast en `429`** con bucket daily a 0 — reintentar a ciegas sólo
-   quema el bucket user (cada 429 lo descuenta).
+   quema el bucket user (cada 429 lo descuenta, verificado en vivo:
+   dos 429 consecutivos descontaron user-daily 31→30→29). Además un
+   **circuit breaker** (`GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS`, 10 min por
+   defecto) responde 429 **en local** durante el cooldown — los reintentos
+   silenciosos de Claude Code rebotan sin coste de cuota; al expirar deja
+   pasar 1 petición de sondeo. Estado visible en `/health` (`circuit`).
 3. **Soporte de thinking**: honra `thinking: {type:'enabled'}` de Claude Code
    (o `GLM_THINKING=1`) y mapea `reasoning_content` del upstream a bloques
    `thinking` de Anthropic (con `thinking_delta`/`signature_delta` en
