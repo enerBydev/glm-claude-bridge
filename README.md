@@ -37,7 +37,54 @@ dependency-free Node.js.
 - **Production hardening** — exponential backoff with jitter on 403/429/5xx,
   idle watchdog, clean client-disconnect handling, `max_tokens` clamping.
 
-## Quick start
+## Quick start — install in ANY chat.z.ai session
+
+The bridge is a **portable, zero-config piece**: clone it in any chat.z.ai
+session, run the installer, and Claude Code works natively with the session's
+own birth mechanism. Nothing is hardcoded — credentials, baseUrl, chatId and
+model are resolved **dynamically at runtime** and auto-reloaded when the
+platform rotates them (mtime-based reload on every request).
+
+```bash
+# 1. In any chat.z.ai session (the runtime injects /etc/.z-ai-config there):
+git clone https://github.com/enerBydev/glm-claude-bridge.git
+cd glm-claude-bridge && ./install.sh
+
+# 2. Work natively
+glm-claude                      # interactive REPL (same UX as `claude`)
+glm-claude -p "refactor this"   # non-interactive
+glm-claude --model glm-5.3-flash -p "hi"   # session model label
+glm-bridge doctor               # full preflight, zero API quota used
+glm-bridge probe                # what model does the gateway REALLY serve?
+```
+
+What `install.sh` does (idempotent, safe to re-run):
+
+1. **Detects the z.ai session** (`/etc/.z-ai-config` → `$ZAI_CONFIG_PATH` →
+   `~/.z-ai-config` → `./.z-ai-config`) and shows the session identity
+   (chatId + token fingerprint — never the token itself).
+2. **Verifies node ≥ 18**.
+3. **Syntax-checks every bridge component** (fails fast on a broken download).
+4. **Installs Claude Code automatically** if missing (`npm i -g
+   @anthropic-ai/claude-code`, with user-prefix and native-installer
+   fallbacks). Flags: `--without-claude` (skip), `--with-claude` (force update).
+5. **Installs `glm-claude` / `glm-bridge` shims** into `~/.local/bin` (and
+   fixes PATH in `~/.bashrc` if needed).
+6. **Runs `glm-bridge doctor`** + a bridge smoke test (0 API calls used).
+
+Uninstall: `./install.sh --uninstall`.
+
+### Why nothing needs reconfiguring
+
+The session's identity lives in the platform-injected file
+`/etc/.z-ai-config` (`baseUrl`, `apiKey`, session JWT `token`, `chatId`,
+`userId`, optional `model`). The bridge **never copies that data anywhere**:
+a config provider re-reads the file on mtime change and rebuilds upstream
+headers **per request** — and since v4 the upstream URL and model are also
+resolved per request. If Z.ai rotates the token mid-session, the next request
+already uses the fresh one. No re-edits, no restarts, no secrets in git.
+
+## Manual setup (without the installer)
 
 ```bash
 # 1. Configure your Z.ai credentials (never committed, gitignored)
@@ -60,19 +107,20 @@ glm-bridge status               # bridge health / logs
 | Script | Purpose |
 |---|---|
 | `glm-claude` | Starts the bridge if needed, exports the full Claude Code env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model mapping, telemetry off), then `exec claude "$@"`. Supports `glm-claude --model <label>` to set the session model label |
-| `glm-bridge` | `start \| stop \| restart \| status \| logs [n] \| follow \| health \| probe` — `probe` live-verifies which model the gateway actually serves |
+| `glm-bridge` | `start \| stop \| restart \| status \| logs [n] \| follow \| health \| probe \| doctor` — `probe` live-verifies which model the gateway actually serves; `doctor` runs the full preflight without spending API quota |
 
 ## Repository layout
 
 ```
+install.sh          Portable installer for any chat.z.ai session (idempotent, --uninstall supported)
 bridge.mjs          HTTP server: routing, SSE pump, retries, logging (logs the gateway's real model echo)
 translate.mjs       Pure Anthropic⇄GLM translation + streaming state machine
-zai-config.mjs      Credential loader (.z-ai-config) + upstream headers
+zai-config.mjs      Credential provider (.z-ai-config, mtime auto-reload) + upstream headers
 probe.mjs           Live probe: which model does the gateway really serve?
-glm-bridge          Control CLI (start/stop/status/logs/health/probe)
-glm-claude          One-command launcher for Claude Code (--model supported)
+glm-bridge          Control CLI (start/stop/status/logs/health/probe/doctor)
+glm-claude          One-command launcher for Claude Code (--model supported, dynamic claude resolution)
 scripts/debug-sse.mjs   Upstream SSE probe (raw bytes + parser simulation)
-tests/test-translate.mjs  26 unit tests for the translation layer
+tests/test-translate.mjs  37 unit tests for the translation layer
 .github/workflows/ci.yml  CI: syntax checks + tests across Node 20/22/24
 README.es.md        Documentación en español
 ```
@@ -81,7 +129,7 @@ README.es.md        Documentación en español
 
 | Variable | Default | Description |
 |---|---|---|
-| `GLM_MODEL` | `glm-5.3-flash` | Model **label** (see *Which model actually runs?*). Non-`glm-*` requested models are mapped to it; `glm-*` labels are forwarded verbatim |
+| `GLM_MODEL` | `glm-5.3-flash` | Model **label**. Precedence (v4): `GLM_MODEL` env → `model` field in the session file → this default. Non-`glm-*` requested models are mapped to the resolved session model; `glm-*` labels are forwarded verbatim |
 | `GLM_BRIDGE_PORT` / `GLM_BRIDGE_HOST` | `8787` / `127.0.0.1` | Bridge listen address |
 | `GLM_THINKING` | `0` | `1` enables upstream thinking (reasoning deltas are still not forwarded) |
 | `GLM_BRIDGE_TOOL_HINT` | on | Appends a system note that forbids tool-name localization |
@@ -90,6 +138,8 @@ README.es.md        Documentación en español
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Upstream idle watchdog |
 | `GLM_BRIDGE_DEBUG` | `0` | Verbose chunk logging |
 | `ZAI_CONFIG_PATH` | auto | Override credential file location (`/etc/.z-ai-config` → `~/.z-ai-config` → `./.z-ai-config`) |
+| `GLM_INSTALL_BIN` | `~/.local/bin` | Where `install.sh` places the `glm-claude` / `glm-bridge` shims |
+| `CLAUDE_BIN` | auto | Explicit path to the `claude` binary (auto-resolved: PATH → npm-global → ~/.local/bin → system dirs) |
 
 ### Environment the launcher sets for Claude Code
 

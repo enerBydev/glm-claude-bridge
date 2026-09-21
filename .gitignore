@@ -1,2 +1,12 @@
+# artefactos de sesión (nunca versionar: son específicos de ESTA sesión)
+logs/
+run/
+*.pid
+.env
+upload/
+__pycache__/
+# skills del workspace de la plataforma (no son parte del bridge)
 skills/
 node_modules/
+# repos embebidos ajenos (el juego vive en su propio repo)
+mario-nuxt/

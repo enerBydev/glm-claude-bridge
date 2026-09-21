@@ -29,18 +29,30 @@ jobs:
           node --check bridge.mjs
           node --check translate.mjs
           node --check zai-config.mjs
+          node --check probe.mjs
           bash -n glm-bridge
           bash -n glm-claude
+          bash -n install.sh
 
       - name: Shell script lint (control CLIs)
         run: |
           # los lanzadores deben ser ejecutables
           test -x glm-bridge
           test -x glm-claude
+          test -x install.sh
           # help sin romper
           ./glm-bridge 2>&1 | grep -q "uso:" || echo "warn: ayuda no detectada"
 
-      - name: Translation unit tests (26 assertions)
+      - name: Installer preflight (no z.ai session expected in CI)
+        run: |
+          # el instalador debe ejecutarse sin sesión z.ai Y AVISARLO, sin morir
+          # antes de tiempo, y dejar shims funcionales con claude ausente
+          # (--without-claude evita tocar el runner)
+          ./install.sh --without-claude || exit 1
+          test -x "$HOME/.local/bin/glm-bridge" || { echo 'shim glm-bridge ausente'; exit 1; }
+          "$HOME/.local/bin/glm-bridge" doctor && echo 'doctor OK (sin sesión z.ai, advertencias esperadas)' || true
+
+      - name: Translation unit tests (37 assertions)
         run: node tests/test-translate.mjs
 
       - name: Smoke — credential loader fails clearly without creds

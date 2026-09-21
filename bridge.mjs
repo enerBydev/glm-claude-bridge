@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ============================================================================
-// bridge.mjs — GLM-Bridge v3 (session-born)
+// bridge.mjs — GLM-Bridge v4 (portable, session-born)
 // Servidor local que expone la API de Messages de Anthropic y la traduce a
 // GLM (endpoint OpenAI-compat) usando EL MISMO MECANISMO DE NACIMIENTO de la
 // sesión: /etc/.z-ai-config con el JWT de sesión (X-Token) + identidad del
@@ -15,6 +15,11 @@
 // el token en cada continuación de conversación; sin X-Token el gateway
 // responde 401), thinking bajo demanda (request de CC o GLM_THINKING),
 // reasoning_content → bloques thinking Anthropic, y logging de cuota.
+// v4 (portable): CERO valores congelados — upstream (baseUrl) y modelo se
+// resuelven POR PETICIÓN desde el proveedor de configuración; así, si el
+// runtime de la plataforma cambia baseUrl, token, chatId o modelo en
+// /etc/.z-ai-config, el bridge se adapta sin reiniciar ni reconfigurar nada.
+// Instalable en cualquier sesión de chat.z.ai con ./install.sh.
 // ============================================================================
 
 import http from 'node:http';
@@ -76,9 +81,18 @@ function absorbCookies(res) {
 }
 const LOG_DIR = path.join(__dirname, 'logs');
 
-const cfg0 = getConfig();
-const UPSTREAM = upstreamUrl(cfg0);
-const UPSTREAM_VISION = upstreamVisionUrl(cfg0);
+// v4: el upstream YA NO se congela al arrancar — se resuelve por petición
+// desde getConfig() (si la plataforma cambia baseUrl, el bridge se adapta).
+function upstreamOf(cfg) { return upstreamUrl(cfg); }
+function upstreamVisionOf(cfg) { return upstreamVisionUrl(cfg); }
+
+// v4: resolución dinámica del modelo por petición:
+//   1. GLM_MODEL (env, lo fija glm-claude --model)
+//   2. cfg.model (campo opcional "model" en el fichero de sesión z-ai-config)
+//   3. 'glm-5.3-flash' (fallback portable)
+function resolveModel(cfg) {
+  return process.env.GLM_MODEL || cfg.model || DEFAULT_MODEL;
+}
 
 // último "model" que el gateway declaró servir en su eco (puede ser cosmético)
 let lastEchoModel = null;
@@ -139,7 +153,7 @@ function readBody(req, limit = 256 * 1024 * 1024) {
 // ---------------------------------------------------------------------------
 const RETRYABLE = new Set([403, 429, 500, 502, 503, 504]);
 
-async function fetchUpstream(bodyObj, reqLog, targetUrl = UPSTREAM) {
+async function fetchUpstream(bodyObj, reqLog, targetUrl) {
   let lastErr = null;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
@@ -224,9 +238,11 @@ async function handleMessages(req, res) {
     return anthropicError(res, 400, 'invalid_request_error', 'JSON inválido: ' + e.message);
   }
 
-  const requestedModel = anthropicBody.model || DEFAULT_MODEL;
+  // v4: modelo resuelto dinámicamente (env > fichero de sesión > fallback)
+  const sessionModel = resolveModel(getConfig());
+  const requestedModel = anthropicBody.model || sessionModel;
   // cualquier modelo no-GLM se dirige al modelo por defecto del bridge
-  const upstreamModel = /^glm/i.test(requestedModel) ? requestedModel : DEFAULT_MODEL;
+  const upstreamModel = /^glm/i.test(requestedModel) ? requestedModel : sessionModel;
 
   const offeredNames = new Set(
     (Array.isArray(anthropicBody.tools) ? anthropicBody.tools : [])
@@ -257,10 +273,12 @@ async function handleMessages(req, res) {
   if (MAX_OUT > 0) upstreamBody.max_tokens = Math.min(upstreamBody.max_tokens, MAX_OUT);
 
   // routing de visión: el gateway sólo acepta imágenes en /chat/completions/vision
+  // v4: upstream resuelto AHORA (por petición) desde la config viva de la sesión
+  const cfgNow = getConfig();
   const hasImages = (anthropicBody.messages || []).some(
     (m) => Array.isArray(m.content) && m.content.some((b) => b && b.type === 'image')
   );
-  const targetUrl = hasImages ? UPSTREAM_VISION : UPSTREAM;
+  const targetUrl = hasImages ? upstreamVisionOf(cfgNow) : upstreamOf(cfgNow);
 
   const shortId = Math.random().toString(36).slice(2, 8);
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
@@ -434,18 +452,26 @@ const server = http.createServer(async (req, res) => {
   const url = (req.url || '').split('?')[0];
   try {
     if (req.method === 'GET' && (url === '/health' || url === '/')) {
-      const c = getConfig();
+      // v4: /health degrada con elegancia si la sesión aún no tiene credenciales
+      // (el bridge arranca en cualquier sesión y espera a que el runtime
+      // inyecte /etc/.z-ai-config — no muere en el arranque).
+      let c = null, cfgErr = null;
+      try { c = getConfig(); } catch (e) { cfgErr = e.message; }
       const body = JSON.stringify({
-        status: 'ok', bridge: 'glm-bridge', version: 3,
-        model: DEFAULT_MODEL,
+        status: c ? 'ok' : 'waiting-session',
+        bridge: 'glm-bridge', version: 4,
+        ...(cfgErr ? { config_error: cfgErr } : {}),
+        model: c ? resolveModel(c) : (process.env.GLM_MODEL || DEFAULT_MODEL),
+        model_env: process.env.GLM_MODEL || null,
+        model_config: c?.model || null,
         gateway_echo_model: lastEchoModel,
-        upstream: UPSTREAM,
-        session: {
+        upstream: c ? upstreamUrl(c) : null,
+        session: c ? {
           chatId: c.chatId || null,
           token: tokenFingerprint(c.token),
           userId: c.userId || null,
           config_mtime: c._mtime ? new Date(c._mtime).toISOString() : null,
-        },
+        } : null,
         quota_last_seen: lastQuota,
         pid: process.pid,
       });
@@ -472,9 +498,13 @@ server.headersTimeout = 60000;
 server.keepAliveTimeout = 75000;
 
 server.listen(PORT, HOST, () => {
-  const c = getConfig();
-  log(`GLM-Bridge v3 (session-born) escuchando en http://${HOST}:${PORT} | modelo=${DEFAULT_MODEL} | upstream=${UPSTREAM}`);
-  log(`creds: ${c._source} | sesión: chatId=${c.chatId || 'sin'} | token=${tokenFingerprint(c.token)} | userId=${c.userId || 'sin'}`);
+  log(`GLM-Bridge v4 (portable, session-born) escuchando en http://${HOST}:${PORT} | modelo=${process.env.GLM_MODEL || DEFAULT_MODEL} (por petición: env > fichero de sesión > defecto)`);
+  try {
+    const c = getConfig();
+    log(`creds: ${c._source} | sesión: chatId=${c.chatId || 'sin'} | token=${tokenFingerprint(c.token)} | userId=${c.userId || 'sin'}`);
+  } catch (e) {
+    log(`creds: AÚN SIN SESIÓN (${e.message}) — el bridge espera y se adapta cuando el runtime inyecte las credenciales`);
+  }
   log(`thinking=${THINKING ? 'on' : 'off'} (override por petición activo) | toolHint=${TOOL_HINT ? 'on' : 'off'} | retries=${MAX_RETRIES}`);
 });
 

@@ -107,6 +107,81 @@ cmd_probe() {
   node "$BRIDGE_DIR/probe.mjs"
 }
 
+# doctor — preflight completo para una sesión FRESCA de chat.z.ai:
+# verifica entorno, credenciales de sesión, instalador de shims y bridge,
+# sin gastar cuota de API (eso lo hace `probe`).
+cmd_doctor() {
+  local fails=0
+  section() { echo; echo "── $1 ──"; }
+  ok()   { echo "  ✓ $1"; }
+  bad()  { echo "  ✗ $1"; fails=$((fails+1)); }
+
+  section "Entorno"
+  if command -v node >/dev/null 2>&1; then
+    local nv; nv="$(node --version)"
+    local major; major="${nv#v}"; major="${major%%.*}"
+    if [ "$major" -ge 18 ]; then ok "node $nv"; else bad "node $nv (se requiere ≥ v18)"; fi
+  else
+    bad "node no encontrado (necesario para el bridge)"
+  fi
+  command -v curl >/dev/null 2>&1 && ok "curl disponible" || bad "curl no encontrado (glm-bridge health/probe lo usan)"
+
+  section "Credenciales de sesión (nacimiento de la sesión, cero hardcoding)"
+  local cfg_path="${ZAI_CONFIG_PATH:-}"
+  [ -z "$cfg_path" ] && [ -f /etc/.z-ai-config ] && cfg_path=/etc/.z-ai-config
+  [ -z "$cfg_path" ] && [ -f "$HOME/.z-ai-config" ] && cfg_path="$HOME/.z-ai-config"
+  [ -z "$cfg_path" ] && [ -f ./.z-ai-config ] && cfg_path="./.z-ai-config"
+  if [ -n "$cfg_path" ] && [ -f "$cfg_path" ]; then
+    ok "config de sesión: $cfg_path"
+    node - "$cfg_path" <<'NODE' && ok "identidad de sesión válida (baseUrl+apiKey)" || bad "config sin baseUrl/apiKey o no-JSON"
+const fs = require('fs');
+const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf-8'));
+if (!c.baseUrl || !c.apiKey) process.exit(1);
+console.log(`    baseUrl=${c.baseUrl} chatId=${c.chatId || '—'} token=${c.token ? '...(' + String(c.token).slice(-8) + ')' : 'ausente'} userId=${c.userId || '—'}`);
+if (c.model) console.log(`    model (fichero de sesión)=${c.model}`);
+NODE
+  else
+    bad "sin fichero de sesión (.z-ai-config) — ¿estás en una sesión de chat.z.ai?"
+  fi
+
+  section "Claude Code"
+  local claude_bin=""
+  if [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then claude_bin="$CLAUDE_BIN"; fi
+  [ -z "$claude_bin" ] && claude_bin="$(command -v claude 2>/dev/null || true)"
+  [ -z "$claude_bin" ] && for p in "$HOME/.npm-global/bin/claude" "$HOME/.local/bin/claude" /usr/local/bin/claude /usr/bin/claude; do
+    [ -x "$p" ] && { claude_bin="$p"; break; }
+  done
+  if [ -n "$claude_bin" ]; then
+    ok "claude: $claude_bin ($("$claude_bin" --version 2>/dev/null | head -1 || echo 'versión desconocida'))"
+  else
+    bad "claude no instalado → ejecuta: $BRIDGE_DIR/install.sh --with-claude"
+  fi
+
+  section "Shims en PATH"
+  local shim_bin="${GLM_INSTALL_BIN:-$HOME/.local/bin}"
+  for s in glm-claude glm-bridge; do
+    if [ -e "$shim_bin/$s" ]; then
+      ok "$shim_bin/$s → $(readlink -f "$shim_bin/$s" 2>/dev/null || echo enlace/copie)"
+    elif command -v "$s" >/dev/null 2>&1; then
+      ok "$s en PATH: $(command -v "$s")"
+    else
+      bad "$s no está en PATH → ejecuta: $BRIDGE_DIR/install.sh"
+    fi
+  done
+
+  section "Bridge local"
+  if is_running; then ok "proceso en marcha (pid $(cat "$PID_FILE"))"; else echo "  · detenido (se arranca solo al usar glm-claude)"; fi
+  if h="$(health)"; then ok "health: $(echo "$h" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(`v${j.version} | modelo=${j.model} | eco_gateway=${j.gateway_echo_model||"—"} | chatId=${j.session?.chatId||"—"} | token=${j.session?.token||"—"}`)}catch{console.log(d.slice(0,160))}})')"; else echo "  · sin respuesta (normal si está detenido)"; fi
+
+  echo
+  if [ "$fails" -eq 0 ]; then
+    echo "doctor: TODO OK — sesión lista para Claude Code nativo sobre GLM (glm-claude)."
+  else
+    echo "doctor: $fails problema(s). Ejecuta: $BRIDGE_DIR/install.sh  (idempotente, repara lo que falte)"
+    return 1
+  fi
+}
+
 case "${1:-status}" in
   start)   cmd_start ;;
   stop)    cmd_stop ;;
@@ -116,5 +191,6 @@ case "${1:-status}" in
   follow)  cmd_follow ;;
   health)  health || { echo "sin respuesta"; exit 1; } ;;
   probe)   cmd_probe ;;
-  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health|probe}"; exit 2 ;;
+  doctor)  cmd_doctor ;;
+  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health|probe|doctor}"; exit 2 ;;
 esac

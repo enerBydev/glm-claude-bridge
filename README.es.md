@@ -4,6 +4,55 @@ Solución original a medida que hace funcionar el **Claude Code oficial de Anthr
 (paquete npm `@anthropic-ai/claude-code`, sin forks ni repos de terceros) sobre el
 gateway GLM de Z.ai, reutilizando **el mismo token** que usa el agente de esta sesión.
 
+## Instalación portable en CUALQUIER sesión de chat.z.ai
+
+El bridge es una **pieza portable de cero configuración**: clónalo en cualquier
+sesión de chat.z.ai, ejecuta el instalador, y Claude Code funciona de manera
+nativa con el mecanismo de nacimiento de ESA sesión. **Nada va hardcodeado** —
+credenciales, baseUrl, chatId y modelo se resuelven **dinámicamente en tiempo de
+ejecución** y se auto-recargan cuando la plataforma los rota (recarga por mtime
+en cada petición).
+
+```bash
+# 1. En cualquier sesión de chat.z.ai (el runtime inyecta allí /etc/.z-ai-config):
+git clone https://github.com/enerBydev/glm-claude-bridge.git
+cd glm-claude-bridge && ./install.sh
+
+# 2. Trabaja de manera nativa
+glm-claude                      # REPL interactivo (misma UX que `claude`)
+glm-claude -p "haz algo"        # modo no interactivo
+glm-claude --model glm-5.3-flash -p "hola"  # etiqueta de modelo de la sesión
+glm-bridge doctor               # diagnóstico completo, 0 cuota de API
+glm-bridge probe                # ¿qué modelo sirve REALMENTE el gateway?
+```
+
+Qué hace `install.sh` (idempotente, seguro de re-ejecutar):
+
+1. **Detecta la sesión z.ai** (`/etc/.z-ai-config` → `$ZAI_CONFIG_PATH` →
+   `~/.z-ai-config` → `./.z-ai-config`) y muestra la identidad de la sesión
+   (chatId + huella del token — nunca el token completo).
+2. **Verifica node ≥ 18**.
+3. **Verifica la sintaxis de cada componente** (falla rápido ante una descarga rota).
+4. **Instala Claude Code automáticamente** si falta (`npm i -g
+   @anthropic-ai/claude-code`, con fallbacks de prefijo de usuario e instalador
+   nativo). Flags: `--without-claude` (omitir), `--with-claude` (forzar actualización).
+5. **Instala los shims `glm-claude` / `glm-bridge`** en `~/.local/bin` (y corrige
+   el PATH en `~/.bashrc` si hace falta).
+6. **Ejecuta `glm-bridge doctor`** + smoke test del bridge (0 llamadas de API).
+
+Desinstalar: `./install.sh --uninstall`.
+
+### Por qué no hay que reconfigurar nunca nada
+
+La identidad de la sesión vive en el fichero inyectado por la plataforma
+`/etc/.z-ai-config` (`baseUrl`, `apiKey`, JWT de sesión `token`, `chatId`,
+`userId`, y opcionalmente `model`). El bridge **nunca copia esos datos a ningún
+sitio**: un proveedor de configuración relee el fichero cuando cambia su mtime y
+reconstruye las cabeceras upstream **por petición** — y desde la v4 la URL
+upstream y el modelo también se resuelven por petición. Si Z.ai rota el token a
+media sesión, la siguiente petición ya usa el nuevo. Sin re-edits, sin
+reinicios, sin secretos en git.
+
 ## Arquitectura
 
 ```
@@ -39,13 +88,16 @@ glm-claude --resume             # continuar sesión
 glm-claude --model glm-x -p ... # etiqueta de modelo para esta sesión (ver abajo)
 ```
 
-Los symlinks están en `~/.npm-global/bin/` (ya en el PATH).
+Los shims los instala `install.sh` en `~/.local/bin` (configurable con `GLM_INSTALL_BIN`).
 
 ## Control del bridge
 
 ```bash
-glm-bridge start | stop | restart | status | logs [n] | follow | health | probe
+glm-bridge start | stop | restart | status | logs [n] | follow | health | probe | doctor
 ```
+
+`glm-bridge doctor` verifica el entorno completo de una sesión fresca (node,
+fichero de sesión, Claude Code, shims en PATH, bridge) SIN gastar cuota de API.
 
 `glm-bridge probe` verifica en vivo qué modelo sirve realmente el gateway
 (2 llamadas API): eco declarado + sonda conductual de cutoff.
@@ -54,21 +106,22 @@ glm-bridge start | stop | restart | status | logs [n] | follow | health | probe
 
 | Fichero | Papel |
 |---|---|
+| `install.sh` | Instalador portable para cualquier sesión z.ai (idempotente, soporta `--uninstall`) |
 | `bridge.mjs` | Servidor HTTP, routing, SSE pump, reintentos, logging (incluye eco del gateway) |
 | `translate.mjs` | Traducción pura Anthropic⇄GLM + máquina de estados de streaming |
-| `zai-config.mjs` | Carga de credenciales (`.z-ai-config`) y cabeceras upstream |
+| `zai-config.mjs` | Proveedor de credenciales (`.z-ai-config`, recarga por mtime) y cabeceras upstream |
 | `probe.mjs` | Sonda de verificación del modelo real (eco + cutoff conductual) |
-| `glm-bridge` | CLI de control (start/stop/status/logs/**probe**) |
-| `glm-claude` | Lanzador: arranca bridge, exporta env, `exec claude` (soporta `--model`) |
-| `logs/` | `server.out` (log vivo) y `bridge-YYYY-MM-DD.log` (por día) |
+| `glm-bridge` | CLI de control (start/stop/status/logs/**probe**/**doctor**) |
+| `glm-claude` | Lanzador: resuelve claude dinámicamente, arranca bridge, exporta env, `exec claude` (soporta `--model`) |
+| `logs/` | `server.out` (log vivo) y `bridge-YYYY-MM-DD.log` (por día) — ignorado por git |
 
 ## Variables de entorno
 
 | Variable | Defecto | Descripción |
 |---|---|---|
-| `GLM_MODEL` | `glm-5.3-flash` | Modelo upstream (los `glm-*` pedidos pasan tal cual; el resto se mapea a este) |
+| `GLM_MODEL` | `glm-5.3-flash` | Etiqueta de modelo. Precedencia (v4): env `GLM_MODEL` → campo `model` del fichero de sesión → este defecto (los `glm-*` pedidos pasan tal cual; el resto se mapea al resuelto) |
 | `GLM_BRIDGE_PORT` / `GLM_BRIDGE_HOST` | `8787` / `127.0.0.1` | Escucha del bridge |
-| `GLM_THINKING` | `0` | `1` activa thinking upstream (deltas `reasoning_content` se ignoran de todos modos) |
+| `GLM_THINKING` | `0` | `1` activa thinking upstream (reasoning_content se traduce a bloques thinking de Anthropic) |
 | `GLM_BRIDGE_TOOL_HINT` | on (`!=0`) | Hint anti-traducción de nombres de herramientas |
 | `GLM_BRIDGE_RETRIES` | `4` | Reintentos ante 403/429/5xx |
 | `GLM_BRIDGE_TOKEN` | vacío | Si se define, exige auth en el bridge |

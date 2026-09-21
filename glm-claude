@@ -36,24 +36,36 @@ if [ -n "$SESSION_MODEL" ]; then
   export GLM_MODEL="$SESSION_MODEL"
 fi
 
-# 1) puente en marcha
+# 1) resolver el binario claude DINÁMICAMENTE (cero rutas fijas):
+#    CLAUDE_BIN env > PATH > rutas comunes de instalación
+resolve_claude() {
+  if [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then echo "$CLAUDE_BIN"; return 0; fi
+  if command -v claude >/dev/null 2>&1; then command -v claude; return 0; fi
+  local p
+  for p in "$HOME/.npm-global/bin/claude" "$HOME/.local/bin/claude" \
+           "/usr/local/bin/claude" "/usr/bin/claude" "$HOME/.claude/local/claude"; do
+    [ -x "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+if ! CLAUDE_BIN_RESOLVED="$(resolve_claude)"; then
+  echo "glm-claude: Claude Code no está instalado en esta sesión." >&2
+  echo "  Instálalo con:  $BRIDGE_DIR/install.sh --with-claude" >&2
+  echo "  (o instala claude por tu cuenta y define CLAUDE_BIN=/ruta/a/claude)" >&2
+  exit 127
+fi
+
+# 2) puente en marcha (restart solo si --model cambió el modelo de sesión)
 "$BRIDGE_DIR/glm-bridge" start >/dev/null 2>&1 || {
   "$BRIDGE_DIR/glm-bridge" start  # reintento verboso para ver el error
 }
-
-# 2) entorno para Claude Code — todo el tráfico va al bridge local
-#    (el bridge reinicia con GLM_MODEL de la sesión si --model lo cambió)
 if [ -n "$SESSION_MODEL" ]; then
   "$BRIDGE_DIR/glm-bridge" restart >/dev/null 2>&1 || "$BRIDGE_DIR/glm-bridge" restart
-else
-  "$BRIDGE_DIR/glm-bridge" start >/dev/null 2>&1 || {
-    "$BRIDGE_DIR/glm-bridge" start  # reintento verboso para ver el error
-  }
 fi
 export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-glm-bridge-local}"
 export ANTHROPIC_API_KEY=""                      # fuerza uso de AUTH_TOKEN
-export ANTHROPIC_MODEL="${GLM_MODEL:-glm-5.3-flash}"
+export ANTHROPIC_MODEL="${GLM_MODEL:-${GLM_DEFAULT_MODEL:-glm-5.3-flash}}"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$ANTHROPIC_MODEL"
@@ -82,4 +94,4 @@ if [ ! -f "$CLAUDE_JSON" ]; then
   printf '{"hasCompletedOnboarding":true,"theme":"dark"}' > "$CLAUDE_JSON"
 fi
 
-exec claude "$@"
+exec "$CLAUDE_BIN_RESOLVED" "$@"
