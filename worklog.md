@@ -268,3 +268,16 @@ Stage Summary:
 - VERIFICADO SIN CUOTA REAL el bucle agéntico COMPLETO: claude -p (binario oficial 2.1.278) → bridge v4 → mock → tool_call Bash → CC ejecuta el comando → tool_result → bridge → mock → AGENTIC-LOOP-OK → resultado en stdout. Primera pasada 3/4 (solo la aserción del fingerprint), segunda 4/4.
 - qa.sh queda como puerta de calidad ÚNICA de 7 etapas: local, CI (cuando el ratelimit se levante el 1-oct) y post-instalación en cualquier sesión.
 - Pendiente: push (token de sesión no persistido por seguridad — solicitar al usuario si el push falla).
+
+---
+Task ID: 9-qa-agentic (push)
+Agent: Super Z (principal)
+Task: Push del test agéntico al repo remoto
+
+Work Log:
+- Push 1 (b075399): commit del test agéntico b52996f + auto-commit de plataforma (artefacto tool-results/); verificado local==remoto con git ls-remote.
+- Limpieza: tool-results/ añadido a .gitignore + git rm --cached; push 2 (f8b306c).
+- Token usado transitoriamente en URL de push, NUNCA persistido (verificado: sin github_pat en .git/config ni ~/.gitconfig).
+
+Stage Summary:
+- Repo sincronizado: remoto main = f8b306c = local. QA 7/7 etapas verdes incluyendo el bucle agéntico completo con Claude Code real contra el mock.
