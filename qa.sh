@@ -5,10 +5,11 @@
 # otro), y validación post-instalación en cualquier sesión.
 #
 #   ./qa.sh              → suite completa
-#   ./qa.sh --fast       → sintaxis + unitarios + smokes (sin E2E ni instalador)
+#   ./qa.sh --fast       → sintaxis + unitarios + smokes (sin E2E, agéntico
+#                          ni instalador)
 #
 # Etapas:
-#   1. Sintaxis (node --check × 4 módulos, bash -n × 3 scripts)
+#   1. Sintaxis (node --check de los 7 módulos .mjs, bash -n × 3 scripts)
 #   2. Unitarios de traducción (37 aserciones)
 #   3. Smokes: loader de credenciales SIN sesión (GLM_QA_HIDE_SESSION=1) y
 #      StreamTranslator → SSE Anthropic válido
@@ -17,7 +18,10 @@
 #   5. E2E con mock del gateway (14 escenarios: tool calling, thinking,
 #      streaming, visión, rotación de credenciales y baseUrl en vivo,
 #      fail-fast 429, 401, recuperación) — cero cuota real
-#   6. Doctor contra la sesión real (informativo, no falla el QA)
+#   6. AGÉNTICO: Claude Code real (binario oficial) ↔ bridge ↔ mock — bucle
+#      tool_use→ejecución→tool_result→texto final, cero cuota (SKIP si no
+#      hay Claude Code instalado; GLM_AGENTIC_REQUIRE=1 lo vuelve obligatorio)
+#   7. Doctor contra la sesión real (informativo, no falla el QA)
 # ============================================================================
 set -u
 cd "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,20 +36,21 @@ pass()   { printf "%b  ✓ %s%b\n" "$C_G" "$1" "$C_0"; }
 fail()   { printf "%b  ✗ %s%b\n" "$C_R" "$1" "$C_0"; FAILED=$((FAILED+1)); }
 info()   { printf "%b  · %s%b\n" "$C_Y" "$1" "$C_0"; }
 
-trap 'STATUS=$?; if [ $STATUS -ne 0 ]; then printf "\n%bQA terminó con fallos (exit %s) — limpiando procesos residuales…%b\n" "$C_Y" "$STATUS" "$C_0"; pkill -f "tests/mock-upstream.mjs" 2>/dev/null; pkill -f "bridge.mjs --glm-e2e" 2>/dev/null; fi' EXIT
+trap 'STATUS=$?; if [ $STATUS -ne 0 ]; then printf "\n%bQA terminó con fallos (exit %s) — limpiando procesos residuales…%b\n" "$C_Y" "$STATUS" "$C_0"; pkill -f "tests/mock-upstream.mjs" 2>/dev/null; pkill -f "bridge.mjs --glm-e2e" 2>/dev/null; pkill -f "bridge.mjs --glm-agentic" 2>/dev/null; fi' EXIT
 
 # ── 1) sintaxis ──────────────────────────────────────────────────────────────
-step "1/6 Sintaxis"
-for f in bridge.mjs translate.mjs zai-config.mjs probe.mjs; do
+step "1/7 Sintaxis"
+for f in bridge.mjs translate.mjs zai-config.mjs probe.mjs tests/mock-upstream.mjs tests/e2e.mjs tests/agentic.mjs; do
   node --check "$f" && pass "$f" || fail "$f"
 done
 for f in glm-bridge glm-claude install.sh; do
   bash -n "$f" && pass "$f (bash)" || fail "$f (bash)"
   test -x "$f" && pass "$f ejecutable" || fail "$f NO ejecutable"
 done
+test -x tests/agentic.mjs && pass "tests/agentic.mjs ejecutable" || fail "tests/agentic.mjs NO ejecutable"
 
 # ── 2) unitarios ─────────────────────────────────────────────────────────────
-step "2/6 Unitarios de traducción"
+step "2/7 Unitarios de traducción"
 if OUT="$(node tests/test-translate.mjs 2>&1)"; then
   pass "$(echo "$OUT" | tail -1)"
 else
@@ -53,7 +58,7 @@ else
 fi
 
 # ── 3) smokes ────────────────────────────────────────────────────────────────
-step "3/6 Smokes"
+step "3/7 Smokes"
 if OUT="$(GLM_QA_HIDE_SESSION=1 node -e "
 import('./zai-config.mjs').then(m => {
   try { m.loadZaiConfig(); console.error('FAIL: cargó credenciales sin sesión'); process.exit(1); }
@@ -71,7 +76,7 @@ import('./translate.mjs').then(({ StreamTranslator }) => {
 
 # ── 4) preflight hermético del instalador ────────────────────────────────────
 if [ "$FAST" -eq 0 ]; then
-  step "4/6 Preflight hermético del instalador (HOME temporal, sin sesión)"
+  step "4/7 Preflight hermético del instalador (HOME temporal, sin sesión)"
   FAKE_HOME="$(mktemp -d)"
   if OUT="$(env HOME="$FAKE_HOME" GLM_QA_HIDE_SESSION=1 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./install.sh --without-claude 2>&1)"; then
     pass "install.sh completa en entorno virgen"
@@ -91,12 +96,12 @@ if [ "$FAST" -eq 0 ]; then
   fi
   rm -rf "$FAKE_HOME"
 else
-  info "4/6 omitida (--fast)"
+  info "4/7 omitida (--fast)"
 fi
 
 # ── 5) E2E con mock (cero cuota) ─────────────────────────────────────────────
 if [ "$FAST" -eq 0 ]; then
-  step "5/6 E2E contra mock del gateway (14 escenarios, cero cuota)"
+  step "5/7 E2E contra mock del gateway (14 escenarios, cero cuota)"
   pkill -f "tests/mock-upstream.mjs" 2>/dev/null; pkill -f "bridge.mjs --glm-e2e" 2>/dev/null; sleep 0.3
   if OUT="$(node tests/e2e.mjs 2>&1)"; then
     pass "$(echo "$OUT" | grep -E '^[0-9]+ pasadas' | head -1)"
@@ -104,11 +109,35 @@ if [ "$FAST" -eq 0 ]; then
     fail "E2E con fallos:"; echo "$OUT" | grep -E "✗|FATAL" | head -10
   fi
 else
-  info "5/6 omitida (--fast)"
+  info "5/7 omitida (--fast)"
 fi
 
-# ── 6) doctor contra la sesión real (informativo) ────────────────────────────
-step "6/6 Doctor (sesión real, informativo)"
+# ── 6) AGÉNTICO: Claude Code real contra el mock (cero cuota) ────────────────
+if [ "$FAST" -eq 0 ]; then
+  step "6/7 Agéntico: Claude Code real ↔ bridge ↔ mock (bucle tool_use completo)"
+  CLAUDE_FOUND=0
+  [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ] && CLAUDE_FOUND=1
+  command -v claude >/dev/null 2>&1 && CLAUDE_FOUND=1
+  for _p in "$HOME/.npm-global/bin/claude" "$HOME/.local/bin/claude" /usr/local/bin/claude /usr/bin/claude "$HOME/.claude/local/claude"; do
+    [ -x "$_p" ] && CLAUDE_FOUND=1
+  done
+  if [ "$CLAUDE_FOUND" -eq 1 ]; then
+    pkill -f "tests/mock-upstream.mjs" 2>/dev/null; pkill -f "bridge.mjs --glm-agentic" 2>/dev/null; sleep 0.3
+    if OUT="$(node tests/agentic.mjs 2>&1)"; then
+      pass "$(echo "$OUT" | grep -E '^AGENTIC:' | head -1)"
+      echo "$OUT" | grep -E '^  ✓' | head -6
+    else
+      fail "test agéntico:"; echo "$OUT" | grep -E "✗|FATAL|SKIP" | head -8
+    fi
+  else
+    info "Claude Code no instalado — etapa omitida (instala con install.sh --with-claude; usa GLM_AGENTIC_REQUIRE=1 para exigirla en CI)"
+  fi
+else
+  info "6/7 omitida (--fast)"
+fi
+
+# ── 7) doctor contra la sesión real (informativo) ────────────────────────────
+step "7/7 Doctor (sesión real, informativo)"
 if ./glm-bridge doctor >/tmp/qa-doctor.out 2>&1; then
   pass "doctor: TODO OK"; grep -E "✓|health" /tmp/qa-doctor.out | head -6
 else

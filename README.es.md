@@ -56,7 +56,7 @@ reinicios, sin secretos en git.
 ## QA — automatizado, offline, cero cuota
 
 ```bash
-./qa.sh            # suite completa (6 etapas)
+./qa.sh            # suite completa (7 etapas)
 ./qa.sh --fast     # solo sintaxis + unitarios + smokes
 ```
 
@@ -79,7 +79,18 @@ y para validar tras instalar en una sesión nueva:
    **rotación de credenciales en vivo** (el token nuevo se usa en la siguiente
    petición, sin reiniciar), **rotación de baseUrl en vivo** (v4), fail-fast 429
    con daily=0 (exactamente UN intento upstream), mapeo 401 y recuperación.
-6. **Doctor** contra la sesión real (informativo).
+6. **Test agéntico con Claude Code REAL** (`tests/agentic.mjs`) — el binario
+   oficial `claude` corre en modo `-p` contra un bridge de prueba cuyo
+   upstream es el mock, con aislamiento total (`CLAUDE_CONFIG_DIR` temporal,
+   impacto cero en tu config, cuota cero): el mock pide una tool_call de
+   Bash, Claude Code la EJECUTA, el `tool_result` regresa por el bridge y el
+   mock cierra el bucle (`AGENTIC-LOOP-OK mock-tool-ok`). Afirma el bucle
+   agéntico completo (tool_use → ejecución → tool_result → texto final), las
+   cabeceras de sesión (X-Token/X-Chat-Id), que el toolset de CC (~20
+   herramientas) llega al upstream, y la ida y vuelta del resultado. Se
+   salta automáticamente si Claude Code no está instalado;
+   `GLM_AGENTIC_REQUIRE=1` la vuelve obligatoria (CI).
+7. **Doctor** contra la sesión real (informativo).
 
 El mock del gateway soporta modos de fallo (`always-429`, `auth-required`) y
 captura completa de peticiones (`/__mock/requests`) para afirmar exactamente

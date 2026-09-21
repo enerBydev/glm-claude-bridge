@@ -7,6 +7,10 @@
 //   MOCK:TOOL   → respuesta con tool_calls (Bash)
 //   MOCK:THINK  → respuesta con reasoning_content + contenido
 //   (defecto)   → eco: "MOCK-OK <última línea del prompt>"
+// BUCLE AGÉNTICO: si algún mensaje trae role:'tool' (resultado de herramienta
+// devuelto por el cliente a través del bridge), el mock CIERRA el bucle con
+// texto "AGENTIC-LOOP-OK <salida>" en vez de pedir otra tool_call (evita
+// bucles infinitos y permite afirmar que ida y vuelta de herramientas funciona).
 // Routing:
 //   POST /chat/completions        → texto/tools/thinking (model "mock-glm-echo")
 //   POST /chat/completions/vision → mismo shape (model "glm-5v-turbo")
@@ -58,7 +62,31 @@ function lastUserText(bodyObj) {
   return '';
 }
 
+function flatContent(c) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c.map((b) => {
+      if (b?.type === 'text') return b.text;
+      if (b?.type === 'tool_result') return typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '');
+      return `[${b?.type || 'bloque'}]`;
+    }).join(' ');
+  }
+  return JSON.stringify(c ?? '');
+}
+
 function completion(bodyObj, model) {
+  const msgs = Array.isArray(bodyObj?.messages) ? bodyObj.messages : [];
+  // PRIORITARIO: ¿ya volvió un resultado de herramienta? → cerrar bucle agéntico
+  const toolMsg = msgs.find((m) => m?.role === 'tool');
+  if (toolMsg) {
+    const out = flatContent(toolMsg.content).replace(/\s+/g, ' ').trim().slice(0, 300);
+    return {
+      id: 'chatcmpl-mock-close-' + Date.now().toString(36),
+      object: 'chat.completion', created: Math.floor(Date.now() / 1000), model,
+      choices: [{ index: 0, message: { role: 'assistant', content: `AGENTIC-LOOP-OK salida de herramienta recibida: ${out || '(vacía)'}` }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 13, completion_tokens: 9, total_tokens: 22 },
+    };
+  }
   const text = lastUserText(bodyObj);
   const marker = text.includes('MOCK:TOOL') ? 'tool' : text.includes('MOCK:THINK') ? 'think' : 'echo';
   const msg = { role: 'assistant', content: null };
@@ -82,6 +110,8 @@ function completion(bodyObj, model) {
     choices: [{ index: 0, message: msg, finish_reason: marker === 'tool' ? 'tool_calls' : 'stop' }],
     usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
   };
+  // nota: los mensajes tool_result de Anthropic llegan traducidos a role:'tool'
+  // (translate.mjs), por eso el cierre del bucle puede detectarse arriba.
 }
 
 function sseChunks(res, bodyObj, model) {

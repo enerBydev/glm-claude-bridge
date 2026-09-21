@@ -87,7 +87,7 @@ already uses the fresh one. No re-edits, no restarts, no secrets in git.
 ## QA — automated, offline, zero quota
 
 ```bash
-./qa.sh            # full suite (6 stages)
+./qa.sh            # full suite (7 stages)
 ./qa.sh --fast     # syntax + unit tests + smokes only
 ```
 
@@ -110,7 +110,17 @@ or any other), and after installing in a fresh session:
    (new token used on the very next request, no restart), **live baseUrl
    rotation** (v4), fail-fast 429 when daily quota is 0 (exactly ONE upstream
    attempt), 401 mapping and post-failure recovery.
-6. **Doctor** against the live session (informational).
+6. **Agentic test with REAL Claude Code** (`tests/agentic.mjs`) — the official
+   `claude` binary runs in `-p` mode against a test bridge whose upstream is
+   the mock, fully isolated (`CLAUDE_CONFIG_DIR` temp, zero impact on your
+   config, zero quota): the mock requests a Bash tool call, Claude Code
+   EXECUTES it, the `tool_result` travels back through the bridge and the
+   mock closes the loop (`AGENTIC-LOOP-OK mock-tool-ok`). Asserts the full
+   agentic loop (tool_use → execution → tool_result → final text), session
+   headers (X-Token/X-Chat-Id), CC's toolset (~20 tools) arriving upstream,
+   and the tool result round-trip. Auto-skipped when Claude Code is not
+   installed; `GLM_AGENTIC_REQUIRE=1` makes it mandatory (CI).
+7. **Doctor** against the live session (informational).
 
 The mock gateway also supports failure modes (`always-429`, `auth-required`)
 and full request capture (`/__mock/requests`) for asserting exactly what the

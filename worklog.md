@@ -249,3 +249,22 @@ Stage Summary:
 - ENTREGADO: QA automatizado de un comando (./qa.sh) que valida TODO el bridge (incluidas las features core v3/v4 de rotación en vivo) de forma determinista, offline y con cero cuota — el mismo ./qa.sh corre local, en CI y tras instalar en cualquier sesión nueva.
 - El CI de GitHub ya está verde (repo público) y ahora ejecuta ./qa.sh como única puerta de calidad.
 - Mock del gateway reutilizable para futuros tests agénticos sin cuota (p.ej. CC contra mock con escenarios scriptados).
+
+---
+Task ID: 9-qa-agentic
+Agent: Super Z (principal)
+Task: Test agéntico con Claude Code REAL contra el mock + integración como etapa 6/7 de qa.sh
+
+Work Log:
+- Parcheado tests/mock-upstream.mjs: al detectar mensajes role:'tool' (tool_result traducido por el bridge) CIERRA el bucle agéntico con "AGENTIC-LOOP-OK <salida>" en vez de pedir otra tool_call (evita bucles infinitos; el marcador MOCK:TOOL de la ronda 1 ya no domina la ronda 2).
+- Creado tests/agentic.mjs: binario oficial de Claude Code resuelto dinámicamente (CLAUDE_BIN > PATH > rutas comunes), modo -p con aislamiento total (CLAUDE_CONFIG_DIR temporal con onboarding pre-completado + settings.json permisivo, cwd temporal, cero impacto en la config real), mismas env vars que glm-claude pero ANTHROPIC_BASE_URL → bridge de prueba (8794) y upstream → mock (8793). SKIP elegante si no hay claude (GLM_AGENTIC_REQUIRE=1 lo vuelve obligatorio para CI); timeout GLM_AGENTIC_TIMEOUT_MS (150s default) con kill de respaldo; GLM_AGENTIC_DEBUG=1 vuelca colas de stdout/stderr.
+- 4 aserciones: health v4 + sesión visible (huella del token), bucle agéntico completo (stdout de claude contiene AGENTIC-LOOP-OK y mock-tool-ok), el mock vio ≥2 llamadas con X-Token/X-Chat-Id correctos + toolset de CC (≥5 tools) + model literal, y un role:'tool' con la salida cruzó el bridge de vuelta.
+- qa.sh ampliado de 6 a 7 etapas: sintaxis de los 3 tests nuevos, etapa 6/7 agéntica con detección dinámica de claude y SKIP informativo, doctor pasa a 7/7, trap limpia bridge --glm-agentic.
+- QA completo ejecutado: TODO VERDE (14 checks sintaxis, 37 unitarios, 2 smokes, 3 preflight instalador, 14 E2E, 4 agénticas, doctor OK).
+- Corrección menor cazada: /health expone tokenFingerprint (últimos 8 chars), no el token — la aserción usa includes('AGENTIC').
+- README.md/README.es.md: sección QA actualizada a 7 etapas con detalle del test agéntico.
+
+Stage Summary:
+- VERIFICADO SIN CUOTA REAL el bucle agéntico COMPLETO: claude -p (binario oficial 2.1.278) → bridge v4 → mock → tool_call Bash → CC ejecuta el comando → tool_result → bridge → mock → AGENTIC-LOOP-OK → resultado en stdout. Primera pasada 3/4 (solo la aserción del fingerprint), segunda 4/4.
+- qa.sh queda como puerta de calidad ÚNICA de 7 etapas: local, CI (cuando el ratelimit se levante el 1-oct) y post-instalación en cualquier sesión.
+- Pendiente: push (token de sesión no persistido por seguridad — solicitar al usuario si el push falla).
