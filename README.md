@@ -213,6 +213,12 @@ README.es.md        Documentación en español
 | `GLM_BRIDGE_TOKEN` | empty | If set, requires this token on bridge requests |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Upstream idle watchdog |
 | `GLM_BRIDGE_DEBUG` | `0` | Verbose chunk logging |
+| `GLM_BRIDGE_TRANSPORT` | `upstream` | `relay` = Chat-Brain Relay: the model is this session's own LLM via a file spool (zero quota, zero upstream) |
+| `GLM_BRIDGE_RELAY_DIR` | `~/.glm-claude-bridge/relay` | Relay spool (`pending/ replies/ archive/ expired/`) |
+| `GLM_BRIDGE_RELAY_HOLD_MS` | `40000` | Per-connection hold waiting for the brain (≤55s recommended: CC SDK timeout is 60s) |
+| `GLM_BRIDGE_RELAY_RETRY_AFTER_S` | `5` | `Retry-After` seconds on the defer 429 |
+| `GLM_BRIDGE_RELAY_MAX_DEFERS` | `60` | Max defers per request before answering `529` |
+| `GLM_BRIDGE_RELAY_POLL_MS` | `400` | Spool poll frequency |
 | `ZAI_CONFIG_PATH` | auto | Override credential file location (`/etc/.z-ai-config` → `~/.z-ai-config` → `./.z-ai-config`) |
 | `GLM_INSTALL_BIN` | `~/.local/bin` | Where `install.sh` places the `glm-claude` / `glm-bridge` shims |
 | `CLAUDE_BIN` | auto | Explicit path to the `claude` binary (auto-resolved: PATH → npm-global → ~/.local/bin → system dirs) |
@@ -307,6 +313,57 @@ Therefore bridge **v3**:
 `glm-claude` still targets the bridge transparently; nothing to configure —
 the bridge is literally born from the same `/etc/.z-ai-config` mechanism the
 host session uses.
+
+## v6 — Chat-Brain Relay transport: THIS session's own LLM as Claude Code's model
+
+The answer to the question that started this project: *can Claude Code use
+exactly what this chat session already uses — no quota, no external services?*
+Yes — but the chat's inference **is not an API**: it is the platform-side
+orchestrator invoking the model per turn (verified live with socket capture:
+zero inference sockets inside the sandbox). What IS inside the sandbox is the
+session's agent, able to read files, reason, and write results. The `relay`
+transport wires that brain to Claude Code through the bridge's file spool:
+
+```
+Claude Code ──HTTP/SSE──▶ bridge (transport=relay) ──files──▶ BRAIN
+ (official)   /v1/messages      pending/ replies/      THIS session's LLM
+```
+
+- **Zero quota**: internal-api.z.ai is never touched (neither zai nor BYOK).
+  Verified in a live demo: full agentic loop (Write → cat → final text,
+  `EXIT_CODE:0`) without a single byte of quota, ~0.8s answers.
+- **Zero external services**: no OpenRouter, no Groq, nothing — just the
+  chat's own wiring + the bridge + CC.
+- Retry-tolerant protocol: canonical body hash (idempotent across CC SDK
+  retries), 40s hold per connection, then `429 + Retry-After` so CC retries
+  natively if the brain needs longer.
+
+Usage:
+
+```bash
+./glm-bridge relay                  # relay bridge on :8788 (spool ~/.glm-claude-bridge/relay)
+# launch CC against the relay (another terminal):
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 ANTHROPIC_AUTH_TOKEN=relay \
+  claude -p "your task" --dangerously-skip-permissions --max-turns 25 < /dev/null
+# act as the brain (you, your subagent, or a script during the chat's turn):
+./glm-bridge relay-pending          # waiting requests (each ships a readable <hash>.digest.md)
+./glm-bridge relay-answer <hash> reply.json
+```
+
+Reply format (`replies/<hash>.json`, atomic write `.tmp` + `rename`):
+`{"text": "..."}` and/or `{"tool_uses": [{"name": "<exact tool>", "input": {...}}]}`
+(or full `{"content": [Anthropic blocks]}`). The digest includes the tool
+schemas: use the EXACT tool names.
+
+Operational notes (learned in the live demo):
+- Answer within the hold (40s; raise `GLM_BRIDGE_RELAY_HOLD_MS` up to ~55s):
+  CC in `-p` does not always retry after the defer — `429 + Retry-After` is a
+  safety net, not the working rhythm.
+- Use `--max-turns N` on CC and answer thoughtfully: a brain that chains
+  endless `Write` calls makes CC loop (it happened in the demo; the
+  request/reply pair lands in `archive/` for auditing).
+- In `-p`, launch CC with `< /dev/null`; sandbox-detached processes may die
+  when the tool-call that spawned them closes.
 
 ## v5 — BYOK multi-provider: your own key, no platform ceiling
 

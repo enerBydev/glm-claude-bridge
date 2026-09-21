@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ============================================================================
-// bridge.mjs — GLM-Bridge v5 (portable, multi-provider)
+// bridge.mjs — GLM-Bridge v6 (portable, multi-provider + Chat-Brain Relay)
 // Servidor local que expone la API de Messages de Anthropic y la traduce a un
 // upstream OpenAI-compat usando EL MISMO MECANISMO DE NACIMIENTO de la sesión:
 // /etc/.z-ai-config con el JWT de sesión (X-Token) + identidad del chat
@@ -41,6 +41,12 @@ import {
   estimateTokens,
   deriveTitleText,
 } from './translate.mjs';
+import {
+  relayInit,
+  relayHealth,
+  relayHandleMessages,
+  RELAY_CONFIG,
+} from './relay.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +69,16 @@ if (BYOK && !BYOK.mainModel) {
   console.error('FATAL: GLM_BRIDGE_UPSTREAM_MODEL es obligatorio con provider=openai (p.ej. deepseek/deepseek-chat, meta-llama/llama-3.3-70b, qwen/qwen3.8-27b:free)');
   process.exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// v6 transporte: 'upstream' (default: zai/BYOK, como v5) | 'relay' (Chat-Brain
+// Relay: el "modelo" es el propio LLM de ESTA sesión de chat — el mismo que
+// genera las respuestas del chat, platform-side — respondiendo las peticiones
+// de CC a través del spool de ficheros del relay. Cero cuota, cero upstream,
+// cero servicios externos: solo el cableado interno del chat + el bridge.
+// ---------------------------------------------------------------------------
+const RELAY = process.env.GLM_BRIDGE_TRANSPORT === 'relay';
+if (RELAY) relayInit();
 
 // ---------------------------------------------------------------------------
 // Configuración
@@ -457,11 +473,14 @@ async function handleMessages(req, res) {
   // v5: modelo resuelto por proveedor.
   //   zai:    env GLM_MODEL > fichero de sesión > fallback (como v4; glm-* literal)
   //   openai: GLM_BRIDGE_MODEL_MAP > clase small/haiku > modelo principal
-  const sessionModel = BYOK ? null : resolveModel(getConfig());
-  const requestedModel = anthropicBody.model || (BYOK ? BYOK.mainModel : sessionModel);
-  const upstreamModel = BYOK
-    ? mapUpstreamModelOpenAi(BYOK, requestedModel)
-    : (/^glm/i.test(requestedModel) ? requestedModel : sessionModel);
+  const sessionModel = (BYOK || RELAY) ? null : resolveModel(getConfig());
+  const requestedModel = anthropicBody.model
+    || (BYOK ? BYOK.mainModel : (RELAY ? 'chat-brain' : sessionModel));
+  const upstreamModel = RELAY
+    ? null
+    : (BYOK
+      ? mapUpstreamModelOpenAi(BYOK, requestedModel)
+      : (/^glm/i.test(requestedModel) ? requestedModel : sessionModel));
 
   const offeredNames = new Set(
     (Array.isArray(anthropicBody.tools) ? anthropicBody.tools : [])
@@ -481,7 +500,7 @@ async function handleMessages(req, res) {
   // .toString() daría los códigos de byte unidos por comas. Usar TextDecoder.
   const decoder = new TextDecoder('utf-8');
 
-  const upstreamBody = buildUpstreamRequest(anthropicBody, {
+  const upstreamBody = RELAY ? null : buildUpstreamRequest(anthropicBody, {
     model: upstreamModel,
     thinking: effectiveThinking,
     toolHint: TOOL_HINT,
@@ -492,24 +511,26 @@ async function handleMessages(req, res) {
   // SSE (stream:true) bajo carga; las stream:false pasan siempre. Pedimos
   // SIEMPRE no-stream y sintetizamos los eventos Anthropic localmente.
   // v5: en BYOK se fuerza también (ruta sintética es provider-agnóstica).
-  if (BYOK || process.env.GLM_BRIDGE_UPSTREAM_STREAM !== '1') upstreamBody.stream = false;
+  if (upstreamBody && (BYOK || process.env.GLM_BRIDGE_UPSTREAM_STREAM !== '1')) upstreamBody.stream = false;
   // Algunos backends GLM rechazan/encolan max_tokens grandes (32768 de CC);
   // cap configurable (GLM_BRIDGE_MAX_OUT) — CC lo usa como tope, no como meta.
   const MAX_OUT = Number(process.env.GLM_BRIDGE_MAX_OUT || 0);
-  if (MAX_OUT > 0) upstreamBody.max_tokens = Math.min(upstreamBody.max_tokens, MAX_OUT);
+  if (upstreamBody && MAX_OUT > 0) upstreamBody.max_tokens = Math.min(upstreamBody.max_tokens, MAX_OUT);
 
   // routing de visión: el gateway zai sólo acepta imágenes en
   // /chat/completions/vision; en BYOK el mismo /chat/completions acepta
   // image_url (translate.mjs ya lo emite).
   // v5: upstream resuelto AHORA (por petición): zai = config viva de la sesión;
   // openai = provider fijo configurado al arranque.
-  const cfgNow = BYOK ? null : getConfig();
+  const cfgNow = (BYOK || RELAY) ? null : getConfig();
   const hasImages = (anthropicBody.messages || []).some(
     (m) => Array.isArray(m.content) && m.content.some((b) => b && b.type === 'image')
   );
-  const targetUrl = BYOK
-    ? openAiTargetUrl(BYOK)
-    : (hasImages ? upstreamVisionOf(cfgNow) : upstreamOf(cfgNow));
+  const targetUrl = RELAY
+    ? null
+    : (BYOK
+      ? openAiTargetUrl(BYOK)
+      : (hasImages ? upstreamVisionOf(cfgNow) : upstreamOf(cfgNow)));
 
   const shortId = Math.random().toString(36).slice(2, 8);
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
@@ -530,6 +551,19 @@ async function handleMessages(req, res) {
       }
       return sendSyntheticStream(res, localFinal, reqLog, t0, 0, shortId);
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // v6 Chat-Brain Relay: la inferencia la pone el propio LLM de ESTA sesión de
+  // chat (platform-side, la misma inteligencia que responde el chat) vía spool
+  // de ficheros. Nada de lo que sigue aplica en este transporte: sin circuito,
+  // sin presupuesto, sin throttle, sin upstream — cuota CERO por construcción.
+  // --------------------------------------------------------------------------
+  if (RELAY) {
+    return relayHandleMessages({
+      res, anthropicBody, requestedModel, reqLog, t0, shortId,
+      responders: { sendJson, sendSyntheticStream, anthropicError },
+    });
   }
 
   // circuit breaker (sólo zai: en BYOK no hay buckets x-ratelimit que proteger)
@@ -738,11 +772,12 @@ const server = http.createServer(async (req, res) => {
       // (el bridge arranca en cualquier sesión y espera a que el runtime
       // inyecte /etc/.z-ai-config — no muere en el arranque).
       let c = null, cfgErr = null;
-      if (!BYOK) { try { c = getConfig(); } catch (e) { cfgErr = e.message; } }
+      if (!BYOK && !RELAY) { try { c = getConfig(); } catch (e) { cfgErr = e.message; } }
       const body = JSON.stringify({
-        status: (c || BYOK) ? 'ok' : 'waiting-session',
-        bridge: 'glm-bridge', version: 5,
+        status: (c || BYOK || RELAY) ? 'ok' : 'waiting-session',
+        bridge: 'glm-bridge', version: 6,
         provider: PROVIDER,
+        transport: RELAY ? 'relay' : 'upstream',
         ...(cfgErr ? { config_error: cfgErr } : {}),
         ...(BYOK ? {
           upstream_model: BYOK.mainModel,
@@ -750,12 +785,12 @@ const server = http.createServer(async (req, res) => {
           upstream_auth: BYOK.key ? 'bearer' : 'none',
           api_key_fingerprint: keyFingerprint(BYOK.key),
         } : {}),
-        model: BYOK ? BYOK.mainModel : (c ? resolveModel(c) : (process.env.GLM_MODEL || DEFAULT_MODEL)),
+        model: RELAY ? 'chat-brain (LLM de esta sesión de chat)' : (BYOK ? BYOK.mainModel : (c ? resolveModel(c) : (process.env.GLM_MODEL || DEFAULT_MODEL))),
         model_env: process.env.GLM_MODEL || null,
         model_config: c?.model || null,
         gateway_echo_model: lastEchoModel,
-        upstream: BYOK ? openAiTargetUrl(BYOK) : (c ? upstreamUrl(c) : null),
-        session: (c && !BYOK) ? {
+        upstream: RELAY ? null : (BYOK ? openAiTargetUrl(BYOK) : (c ? upstreamUrl(c) : null)),
+        session: (c && !BYOK && !RELAY) ? {
           chatId: c.chatId || null,
           token: tokenFingerprint(c.token),
           userId: c.userId || null,
@@ -777,6 +812,15 @@ const server = http.createServer(async (req, res) => {
           answered_total: smallCounters.title + smallCounters.generic,
           by_kind: { title: smallCounters.title, generic: smallCounters.generic },
         },
+        ...(RELAY ? {
+          relay: relayHealth(),
+          relay_config: {
+            dir: RELAY_CONFIG.dir,
+            hold_ms: RELAY_CONFIG.holdMs,
+            retry_after_s: RELAY_CONFIG.retryAfterS,
+            max_defers: RELAY_CONFIG.maxDefers,
+          },
+        } : {}),
         pid: process.pid,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -802,6 +846,10 @@ server.headersTimeout = 60000;
 server.keepAliveTimeout = 75000;
 
 server.listen(PORT, HOST, () => {
+  if (RELAY) {
+    log(`GLM-Bridge v6 (Chat-Brain Relay) escuchando en http://${HOST}:${PORT} | spool=${RELAY_CONFIG.dir} | hold=${RELAY_CONFIG.holdMs}ms | retry-after=${RELAY_CONFIG.retryAfterS}s | max-defers=${RELAY_CONFIG.maxDefers} | el "modelo" es el LLM de ESTA sesión de chat (cero cuota, cero upstream)`);
+    return;
+  }
   if (BYOK) {
     log(`GLM-Bridge v5 (multi-provider) escuchando en http://${HOST}:${PORT} | provider=openai | upstream=${BYOK.baseUrl} | modelo=${BYOK.mainModel}${BYOK.smallModel !== BYOK.mainModel ? '/small=' + BYOK.smallModel : ''} | auth=${BYOK.key ? 'bearer' : 'none'}`);
   } else {

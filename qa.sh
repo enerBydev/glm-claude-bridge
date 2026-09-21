@@ -112,6 +112,19 @@ else
   info "5/7 omitida (--fast)"
 fi
 
+# ── 5b) E2E del transporte Chat-Brain Relay (cero cuota, cero upstream) ────
+if [ "$FAST" -eq 0 ]; then
+  step "5b/7 E2E Relay: protocolo CC ↔ spool ↔ cerebro (6 escenarios, sin upstream)"
+  pkill -f "bridge.mjs" 2>/dev/null; sleep 0.3
+  if OUT="$(node tests/e2e-relay.mjs 2>&1)"; then
+    pass "$(echo "$OUT" | grep -E 'escenario\(s\) OK' | head -1)"
+  else
+    fail "E2E relay con fallos:"; echo "$OUT" | grep -E "✗|FATAL" | head -10
+  fi
+else
+  info "5b/7 omitida (--fast)"
+fi
+
 # ── 6) AGÉNTICO: Claude Code real contra el mock (cero cuota) ────────────────
 if [ "$FAST" -eq 0 ]; then
   step "6/7 Agéntico: Claude Code real ↔ bridge ↔ mock (bucle tool_use completo)"

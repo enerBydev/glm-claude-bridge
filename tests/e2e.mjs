@@ -134,7 +134,7 @@ async function main() {
   await test('health: ok + sesión visible (chatId/token/mtime)', async () => {
     const r = await (await fetch(`${B_URL}/health`)).json();
     assert.equal(r.status, 'ok');
-    assert.equal(r.version, 5);
+    assert.equal(r.version, 6);
     assert.equal(r.provider, 'zai');
     assert.equal(r.session.chatId, 'chat-e2e-1');
     assert.match(r.session.token, /JWT-A/);

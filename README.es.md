@@ -205,6 +205,12 @@ fichero de sesión, Claude Code, shims en PATH, bridge) SIN gastar cuota de API.
 | `GLM_BRIDGE_TOKEN` | vacío | Si se define, exige auth en el bridge |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Watchdog de inactividad del upstream |
 | `GLM_BRIDGE_DEBUG` | `0` | Log verboso de chunks del stream |
+| `GLM_BRIDGE_TRANSPORT` | `upstream` | `relay` = Chat-Brain Relay: el "modelo" es el LLM de esta sesión vía spool de ficheros (cero cuota, cero upstream) |
+| `GLM_BRIDGE_RELAY_DIR` | `~/.glm-claude-bridge/relay` | Spool del relay (`pending/ replies/ archive/ expired/`) |
+| `GLM_BRIDGE_RELAY_HOLD_MS` | `40000` | Hold por conexión esperando al cerebro (≤55s recomendado: timeout SDK de CC 60s) |
+| `GLM_BRIDGE_RELAY_RETRY_AFTER_S` | `5` | Segundos del `Retry-After` en el 429 de aplazamiento |
+| `GLM_BRIDGE_RELAY_MAX_DEFERS` | `60` | Aplazamientos máximos por petición antes de responder `529` |
+| `GLM_BRIDGE_RELAY_POLL_MS` | `400` | Frecuencia de sondeo del spool |
 | `ZAI_CONFIG_PATH` | auto | Override de la ruta del `.z-ai-config` |
 
 El lanzador `glm-claude` exporta además el entorno correcto para Claude Code
@@ -310,6 +316,58 @@ Por eso el bridge **v3**:
 `glm-claude` sigue apuntando al bridge de forma transparente; nada que
 configurar — el bridge nace literalmente del mismo mecanismo
 `/etc/.z-ai-config` que la sesión anfitriona.
+
+### Modo Chat-Brain Relay (v6) — el "modelo" es el propio LLM de ESTA sesión
+
+La respuesta a la pregunta que originó el proyecto: *¿puede Claude Code usar
+exactamente lo que ya usa esta sesión de chat, sin cuota y sin servicios
+externos?* Sí — pero la inferencia del chat **no es una API**: es el orquestador
+platform-side invocando al modelo por turnos (verificado en vivo con captura de
+sockets: cero sockets de inferencia en el sandbox). Lo que SÍ hay dentro del
+sandbox es el agente de la sesión, con su capacidad de leer ficheros, razonar
+y escribir resultados. El transporte `relay` conecta ese cerebro con Claude
+Code a través del spool de ficheros del bridge:
+
+```
+Claude Code ──HTTP/SSE──▶ bridge (transport=relay) ──ficheros──▶ CEREBRO
+ (oficial)   /v1/messages      pending/ replies/         el LLM de ESTA sesión
+```
+
+- **Cero cuota**: no se toca internal-api.z.ai (ni zai ni BYOK). Verificado en
+  demo en vivo: bucle agéntico completo (Write → cat → texto final,
+  `EXIT_CODE:0`) sin un solo byte de cuota y con respuestas de ~0.8s.
+- **Cero servicios externos**: sin OpenRouter, sin Groq, sin nada — solo el
+  cableado interno del chat + el bridge + CC.
+- Protocolo tolerante a reintentos: hash canónico del body (idempotente ante
+  los reintentos del SDK de CC), hold de 40s por conexión y, si el cerebro
+  tarda más, `429 + Retry-After` para que CC reintente de forma nativa.
+
+Uso:
+
+```bash
+./glm-bridge relay                  # bridge relay en :8788 (spool ~/.glm-claude-bridge/relay)
+# lanzar CC contra el relay (en otra terminal):
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 ANTHROPIC_AUTH_TOKEN=relay \
+  claude -p "tu tarea" --dangerously-skip-permissions --max-turns 25 < /dev/null
+# actuar de cerebro (tú, tu subagente o un script durante el turno del chat):
+./glm-bridge relay-pending          # peticiones esperando (cada una trae <hash>.digest.md legible)
+./glm-bridge relay-answer <hash> reply.json
+```
+
+Formato de respuesta (`replies/<hash>.json`, escritura atómica `.tmp` + `rename`):
+`{"text": "..."}` y/o `{"tool_uses": [{"name": "<tool exacta>", "input": {...}}]}`
+(o `{"content": [bloques Anthropic]}` completo). El digest incluye los schemas
+de las tools: usa los nombres EXACTOS.
+
+Notas operativas (aprendidas en la demo en vivo):
+- Responde dentro del hold (40s; sube `GLM_BRIDGE_RELAY_HOLD_MS` hasta ~55s):
+  CC en `-p` no siempre reintenta tras el aplazamiento — el `429 + Retry-After`
+  es red de seguridad, no ritmo de trabajo.
+- Usa `--max-turns N` en CC y responde con criterio: un cerebro que encadena
+  `Write` infinitos hace loopear a CC (sucedió en la demo; la pareja
+  request/reply queda en `archive/` para auditarla).
+- En `-p` lanza CC con `< /dev/null`; los procesos detached del sandbox pueden
+  morir al cerrarse la tool-call que los creó.
 
 ### Modo BYOK: tu propia key, sin techo de plataforma (v5)
 

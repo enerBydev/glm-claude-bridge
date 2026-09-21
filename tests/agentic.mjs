@@ -201,7 +201,7 @@ async function main() {
   await test('health del bridge de prueba: ok, v4, sesión agéntica visible', async () => {
     const h = await (await fetch(`${B_URL}/health`)).json();
     if (h.status !== 'ok') throw new Error(`status=${h.status}`);
-    if (h.version !== 5) throw new Error(`version=${h.version}`);
+    if (h.version !== 6) throw new Error(`version=${h.version}`);
     // el health expone la HUELLA del token (últimos 8 chars), nunca el token
     if (!String(h.session?.token || '').includes('AGENTIC')) throw new Error(`sesión no visible: ${h.session?.token}`);
   });

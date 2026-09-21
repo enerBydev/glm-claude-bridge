@@ -107,6 +107,71 @@ cmd_probe() {
   node "$BRIDGE_DIR/probe.mjs"
 }
 
+# ---------------------------------------------------------------------------
+# v6 Chat-Brain Relay: instancia del bridge en modo relay — el "modelo" que
+# responde a Claude Code es el propio LLM de ESTA sesión de chat, vía spool
+# de ficheros (pending/replies). Cero cuota, cero upstream, cero servicios
+# externos: únicamente el cableado interno del chat + el bridge + CC.
+# ---------------------------------------------------------------------------
+RELAY_PORT="${GLM_BRIDGE_RELAY_PORT:-8788}"
+RELAY_PID_FILE="$BRIDGE_DIR/run/bridge-relay.pid"
+RELAY_DIR_HINT="${GLM_BRIDGE_RELAY_DIR:-$HOME/.glm-claude-bridge/relay}"
+
+relay_running() {
+  [ -f "$RELAY_PID_FILE" ] || return 1
+  local pid; pid="$(cat "$RELAY_PID_FILE" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+relay_health() {
+  curl -fsS --max-time 3 "http://$HOST:$RELAY_PORT/health" 2>/dev/null
+}
+
+cmd_relay() {
+  if relay_running && relay_health >/dev/null 2>&1; then
+    echo "glm-bridge relay: ya está en marcha (pid $(cat "$RELAY_PID_FILE")) en http://$HOST:$RELAY_PORT"
+    return 0
+  fi
+  echo "glm-bridge relay: iniciando en http://$HOST:$RELAY_PORT (spool: $RELAY_DIR_HINT) ..."
+  GLM_BRIDGE_TRANSPORT=relay GLM_BRIDGE_PORT="$RELAY_PORT" nohup node "$BRIDGE_DIR/bridge.mjs" >> "$LOG_DIR/relay.out" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$RELAY_PID_FILE"
+  for _ in $(seq 1 40); do
+    if relay_health >/dev/null 2>&1; then
+      echo "glm-bridge relay: OK (pid $pid)"
+      echo "  spool: $RELAY_DIR_HINT"
+      echo "  pendientes ahora:"
+      node "$BRIDGE_DIR/relay.mjs" pending | sed 's/^/    /'
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "glm-bridge relay: ERROR — no respondió a tiempo. Últimas líneas:" >&2
+  tail -n 15 "$LOG_DIR/relay.out" >&2
+  return 1
+}
+
+cmd_relay_stop() {
+  if ! relay_running; then
+    echo "glm-bridge relay: no está en marcha"
+    rm -f "$RELAY_PID_FILE"
+    return 0
+  fi
+  local pid; pid="$(cat "$RELAY_PID_FILE")"
+  echo "glm-bridge relay: deteniendo pid $pid ..."
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  rm -f "$RELAY_PID_FILE"
+  echo "glm-bridge relay: detenido"
+}
+
+cmd_relay_pending() { node "$BRIDGE_DIR/relay.mjs" pending; }
+cmd_relay_answer() { node "$BRIDGE_DIR/relay.mjs" answer "$@"; }
+
 # doctor — preflight completo para una sesión FRESCA de chat.z.ai:
 # verifica entorno, credenciales de sesión, instalador de shims y bridge,
 # sin gastar cuota de API (eso lo hace `probe`).
@@ -209,5 +274,9 @@ case "${1:-status}" in
   health)  health || { echo "sin respuesta"; exit 1; } ;;
   probe)   cmd_probe ;;
   doctor)  cmd_doctor ;;
-  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health|probe|doctor}"; exit 2 ;;
+  relay)         cmd_relay ;;
+  relay-stop)    cmd_relay_stop ;;
+  relay-pending) cmd_relay_pending ;;
+  relay-answer)  shift; cmd_relay_answer "$@" ;;
+  *) echo "uso: glm-bridge {start|stop|restart|status|logs [n]|follow|health|probe|doctor|relay|relay-stop|relay-pending|relay-answer <hash> <reply.json>}"; exit 2 ;;
 esac
