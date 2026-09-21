@@ -26,6 +26,50 @@ export function estimateTokens(text = '') {
   return Math.max(1, Math.round(cjk + other / 4));
 }
 
+// Stopwords es/en para derivar títulos legibles de sesiones (v5 short-circuit)
+const TITLE_STOPWORDS = new Set(
+  ('el la los las un una unos unas y o u a en que es por con para del al se su lo más mas me mi tu te the a an and or of to in on for with is are was were be this that it as at by from').split(' ')
+);
+
+/**
+ * v5 short-circuit: deriva un título de sesión (y slug de branch opcional) a
+ * partir del texto del prompt — cumple el contrato de CC (teleport/generate
+ * session title esperan TEXTO JSON {title} o {title,branch}, no tool_use).
+ * Determinista, puro y unit-testable.
+ */
+export function deriveTitleText(raw, withBranch = false) {
+  let t = String(raw || '')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, ' ')   // quita tags (<session>...</session>) conservando contenido
+    .replace(/\s+/g, ' ')
+    .trim();
+  const fallback = 'Sesión GLM';
+  if (!t) t = fallback;
+  const picked = [];
+  for (const w of t.split(' ')) {
+    const clean = w.replace(/[^\p{L}\p{N}._\-]/gu, '');
+    if (!clean || TITLE_STOPWORDS.has(clean.toLowerCase())) continue;
+    picked.push(clean);
+    if (picked.length >= 5) break;
+  }
+  if (!picked.length) {
+    for (const w of t.split(' ')) {
+      if (w) picked.push(w.slice(0, 24));
+      if (picked.length >= 3) break;
+    }
+  }
+  let title = (picked.join(' ') || fallback).slice(0, 60).trim();
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  if (!withBranch) return { title };
+  const slug = title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 50) || 'sesion-glm';
+  return { title, branch: 'claude/' + slug };
+}
+
 const randId = (p) => p + '_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 function normalizeName(n = '') {
@@ -186,8 +230,14 @@ export function translateMessages(messages = []) {
       continue;
     }
 
-    // otros roles desconocidos: reenvío literal prudente
-    out.push({ role: msg.role, content: '' });
+    // v5: CC 2.1.278 envía role:'system' mid-conversation (#Environment, ~7KB)
+    // — antes se reenviaba vacío y el contexto se PERDÍA silenciosamente.
+    // Extraer el texto y reenviarlo como system (OpenAI-compat lo acepta en
+    // cualquier posición del array).
+    const sysText = Array.isArray(msg.content)
+      ? msg.content.filter((b) => b && b.type === 'text').map((b) => b.text || '').join('\n')
+      : typeof msg.content === 'string' ? msg.content : '';
+    out.push({ role: 'system', content: sysText });
   }
   return out;
 }
@@ -247,8 +297,15 @@ export function buildUpstreamRequest(anthropicBody, opts = {}) {
     messages,
     max_tokens: clampMaxTokens(anthropicBody.max_tokens),
     stream: !!anthropicBody.stream,
-    thinking: { type: opts.thinking ? 'enabled' : 'disabled' },
   };
+  // v5: `thinking` es campo propietario GLM/Zhipu — SOLO provider zai. Los
+  // upstream OpenAI estrictos responden 400 "unrecognized argument". En BYOK
+  // el razonamiento lo decide el modelo (opcionalmente vía reasoning_effort).
+  if (opts.provider === 'openai') {
+    if (opts.reasoningEffort) body.reasoning_effort = String(opts.reasoningEffort);
+  } else {
+    body.thinking = { type: opts.thinking ? 'enabled' : 'disabled' };
+  }
   if (anthropicBody.temperature != null) body.temperature = bodyNum(anthropicBody.temperature);
   if (anthropicBody.top_p != null) body.top_p = bodyNum(anthropicBody.top_p);
   if (Array.isArray(anthropicBody.stop_sequences) && anthropicBody.stop_sequences.length) {
@@ -422,9 +479,10 @@ export class StreamTranslator {
     if (choice.finish_reason) this.finishReason = choice.finish_reason;
     const delta = choice.delta || {};
 
-    // delta.reasoning_content → bloque thinking (sólo presente con thinking
-    // enabled en el upstream GLM; con disabled no aparece, coste cero).
-    const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+    // delta.reasoning_content → bloque thinking (GLM thinking híbrido).
+    // v5: alias delta.reasoning (estilo OpenRouter) — mismo tratamiento.
+    const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+      : typeof delta.reasoning === 'string' ? delta.reasoning : '';
     if (reasoning) {
       if (!this.current || this.current.type !== 'thinking') {
         out.push(...this.#closeCurrent());

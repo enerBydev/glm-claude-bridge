@@ -17,7 +17,7 @@
 //   POST /chat/completions        → texto/tools/thinking (model "mock-glm-echo")
 //   POST /chat/completions/vision → mismo shape (model "glm-5v-turbo")
 // Modo global por control-plane (para pruebas de fallo):
-//   POST /__mock/mode {"mode":"always-429"|"auth-required"|"normal"}
+//   POST /__mock/mode {"mode":"always-429"|"auth-required"|"bearer-auth-required"|"model-not-found"|"normal"}
 // Observabilidad (assertions):
 //   GET  /__mock/requests → [{url, method, headers, body}] de TODAS las llamadas
 //   POST /__mock/reset    → vacía la captura y vuelve a modo normal
@@ -28,7 +28,7 @@ import http from 'node:http';
 
 const PORT = Number(process.env.MOCK_PORT || 8790);
 const captured = [];   // {url, method, headers, body}
-let mode = 'normal';   // normal | always-429 | auth-required
+let mode = 'normal';   // normal | always-429 | auth-required | bearer-auth-required | model-not-found
 
 function quotaHeaders(freeze) {
   // bucket key agotado cuando freeze → el bridge debe hacer fail-fast
@@ -187,6 +187,14 @@ const server = http.createServer(async (req, res) => {
   if (mode === 'auth-required' && !req.headers['x-token']) {
     return sendJson(res, 401, { error: 'missing X-Token header' });
   }
+  // v5: fallos estilo proveedor OpenAI-compat (para los tests BYOK)
+  if (mode === 'bearer-auth-required') {
+    // simula SIEMPRE key inválida/rechazada (error OpenAI estándar)
+    return sendJson(res, 401, { error: { message: 'Incorrect API key provided', type: 'invalid_request_error', code: 'invalid_api_key' } });
+  }
+  if (mode === 'model-not-found') {
+    return sendJson(res, 404, { error: { message: `The model '${bodyObj?.model || '?'}' does not exist`, type: 'invalid_request_error', code: 'model_not_found' } });
+  }
 
   // ---- rutas del gateway ----
   if (req.method === 'POST' && url === '/chat/completions/vision') {
@@ -200,5 +208,5 @@ const server = http.createServer(async (req, res) => {
   return sendJson(res, 404, { error: `mock: ruta no soportada ${req.method} ${url}` });
 });
 
-server.listen(PORT, '127.0.0.1', () => console.log(`mock-upstream listo en http://127.0.0.1:${PORT} (modos: normal|always-429|auth-required)`));
+server.listen(PORT, '127.0.0.1', () => console.log(`mock-upstream listo en http://127.0.0.1:${PORT} (modos: normal|always-429|auth-required|bearer-auth-required|model-not-found)`));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(0));

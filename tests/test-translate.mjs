@@ -1,5 +1,5 @@
 import {
-  buildUpstreamRequest, resolveToolName, StreamTranslator, estimateTokens, anthropicFromComplete,
+  buildUpstreamRequest, resolveToolName, StreamTranslator, estimateTokens, anthropicFromComplete, deriveTitleText,
 } from '../translate.mjs';
 
 let pass = 0, fail = 0;
@@ -96,6 +96,41 @@ ok(evT3.some(e => e.data?.delta?.type === 'signature_delta'), 'signature_delta a
 const evT4 = trThink.finalize();
 ok(!evT4.some(e => e.data?.delta?.type === 'signature_delta'), 'finalize no duplica signature_delta');
 ok(trThink.stats.reasoningChars === ('paso 1: ' + 'paso 2').length, 'stats.reasoningChars: ' + trThink.stats.reasoningChars);
+
+// 9. v5: provider=openai → SIN campo thinking (OpenAI estricto responde 400)
+const upByok = buildUpstreamRequest(req, { model: 'byok-main-model', thinking: false, provider: 'openai' });
+ok(!('thinking' in upByok), 'BYOK: sin campo thinking');
+const upByokEffort = buildUpstreamRequest(req, { model: 'byok', thinking: false, provider: 'openai', reasoningEffort: 'high' });
+ok(upByokEffort.reasoning_effort === 'high' && !('thinking' in upByokEffort), 'BYOK: reasoning_effort propagado y sin thinking');
+const upZai = buildUpstreamRequest(req, { model: 'glm-5.3-flash', thinking: true });
+ok(upZai.thinking?.type === 'enabled', 'zai (default): thinking conservado');
+
+// 10. v5: role:system mid-conversation de CC (#Environment) ya NO se vacía
+const reqSys = {
+  model: 'm', max_tokens: 100,
+  messages: [
+    { role: 'user', content: 'hola' },
+    { role: 'system', content: [{ type: 'text', text: '# Environment\nCWD=/repo' }] },
+    { role: 'user', content: 'sigue' },
+  ],
+};
+const upSys = buildUpstreamRequest(reqSys, { model: 'glm' });
+ok(upSys.messages.some((m) => m.role === 'system' && m.content.includes('# Environment')), 'system mid-conversation preservado (antes se vaciaba)');
+
+// 11. v5: alias delta.reasoning (OpenRouter) → thinking_delta
+const trAlias = new StreamTranslator({ requestedModel: 'x' });
+const evA = trAlias.handleChunk({ choices: [{ delta: { reasoning: 'razonando r1' } }] });
+ok(evA.some((e) => e.data?.delta?.type === 'thinking_delta' && e.data.delta.thinking === 'razonando r1'), 'delta.reasoning (OpenRouter) → thinking_delta');
+
+// 12. v5: deriveTitleText (contrato de títulos de CC: TEXTO JSON)
+const dt1 = deriveTitleText('<session>meta</session> Arreglar el login de auth.ts', false);
+ok(typeof dt1.title === 'string' && dt1.title.length >= 1 && dt1.title.length <= 60, 'título: longitud 1-60: ' + dt1.title);
+ok(/Arreglar/i.test(dt1.title) && dt1.title.includes('auth.ts'), 'título: palabras útiles conservadas');
+ok(!dt1.title.includes('<') && !dt1.title.includes('>'), 'título: sin tags');
+ok(!('branch' in dt1), 'sin branch si no se pide');
+const dt2 = deriveTitleText('Arreglar el login de autenticación', true);
+ok(/^claude\/[a-z0-9-]+$/.test(dt2.branch) && !/[áéíóúñ]/.test(dt2.branch), 'branch: slug ASCII: ' + dt2.branch);
+ok(JSON.stringify(JSON.parse(JSON.stringify(dt1))) === JSON.stringify(dt1), 'título serializable a JSON plano (contrato CC)');
 
 console.log(`\n${pass} pasadas, ${fail} fallos`);
 process.exit(fail ? 1 : 0);

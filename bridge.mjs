@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 // ============================================================================
-// bridge.mjs — GLM-Bridge v4 (portable, session-born)
-// Servidor local que expone la API de Messages de Anthropic y la traduce a
-// GLM (endpoint OpenAI-compat) usando EL MISMO MECANISMO DE NACIMIENTO de la
-// sesión: /etc/.z-ai-config con el JWT de sesión (X-Token) + identidad del
-// chat (X-Chat-Id/X-User-Id) que el runtime de la plataforma inyecta.
+// bridge.mjs — GLM-Bridge v5 (portable, multi-provider)
+// Servidor local que expone la API de Messages de Anthropic y la traduce a un
+// upstream OpenAI-compat usando EL MISMO MECANISMO DE NACIMIENTO de la sesión:
+// /etc/.z-ai-config con el JWT de sesión (X-Token) + identidad del chat
+// (X-Chat-Id/X-User-Id) que el runtime de la plataforma inyecta.
 // Sin dependencias externas.
 //
-//   Claude Code  ──HTTP/SSE──▶  GLM-Bridge  ──HTTP/SSE──▶  internal-api.z.ai
+//   Claude Code  ──HTTP/SSE──▶  GLM-Bridge  ──HTTP/SSE──▶  upstream OpenAI-compat
 //   (oficial)     /v1/messages   este proceso            /chat/completions
 //                                            (X-Token JWT de ESTA sesión)
+//
+// v5 (multi-provider BYOK): el upstream puede ser 'zai' (identidad session-born,
+// default) o CUALQUIER endpoint OpenAI-compat aportado por el usuario
+// (GLM_BRIDGE_PROVIDER=openai + GLM_BRIDGE_UPSTREAM_BASE_URL/_API_KEY/_MODEL):
+// sin cabeceras Z.ai, sin buckets de cuota de la plataforma, sin techo. Además:
+// short-circuit "quota saver" (títulos/llamadas de fondo de CC respondidos en
+// local, coste cero) y gobernador de presupuesto diario propio.
 //
 // v3: credenciales con recarga automática por mtime (la plataforma re-inyecta
 // el token en cada continuación de conversación; sin X-Token el gateway
@@ -27,13 +34,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadZaiConfig, createConfigProvider, tokenFingerprint, upstreamHeaders, upstreamUrl, upstreamVisionUrl } from './zai-config.mjs';
+import { resolveProvider, createOpenAiProvider, openAiHeaders, openAiTargetUrl, mapUpstreamModelOpenAi, keyFingerprint } from './provider.mjs';
 import {
   buildUpstreamRequest,
   anthropicFromComplete,
   estimateTokens,
+  deriveTitleText,
 } from './translate.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ---------------------------------------------------------------------------
+// v5: proveedor de inferencia. 'zai' = identidad session-born (default, bit-
+// idéntico a v4); 'openai' = BYOK del usuario (cualquier endpoint OpenAI-compat).
+// Con BYOK el bridge NO necesita /etc/.z-ai-config y las cuotas de la plataforma
+// (key 300/día compartida + user 200/día) dejan de aplicar.
+// ---------------------------------------------------------------------------
+let PROVIDER = 'zai';
+let BYOK = null;
+try {
+  PROVIDER = resolveProvider();
+  if (PROVIDER === 'openai') BYOK = createOpenAiProvider();
+} catch (e) {
+  console.error('FATAL (config de proveedor): ' + e.message);
+  process.exit(1);
+}
+if (BYOK && !BYOK.mainModel) {
+  console.error('FATAL: GLM_BRIDGE_UPSTREAM_MODEL es obligatorio con provider=openai (p.ej. deepseek/deepseek-chat, meta-llama/llama-3.3-70b, qwen/qwen3.8-27b:free)');
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Configuración
@@ -50,7 +79,7 @@ const IDLE_TIMEOUT_MS = Number(process.env.GLM_BRIDGE_IDLE_MS || 60000);
 // El WAF del gateway hace blackhole silencioso ante ráfagas (herramientas
 // locales instantáneas => peticiones separadas por <30ms). Espacio mínimo
 // entre INICIOS de peticiones upstream.
-const MIN_INTERVAL_MS = Number(process.env.GLM_BRIDGE_MIN_INTERVAL_MS || 3000);
+const MIN_INTERVAL_MS = Number(process.env.GLM_BRIDGE_MIN_INTERVAL_MS ?? (PROVIDER === 'zai' ? 3000 : 0));
 let lastUpstreamStart = 0;
 // Cookie jar anti-WAF: el WAF (Alibaba) emite acw_tc y penaliza con blackhole
 // de 300s a los clientes que no lo reenvían (cada request parece "nuevo").
@@ -60,6 +89,8 @@ const cookieJar = new Map();
 // en cuanto el token rota (causa raíz del 401 "missing X-Token header").
 const getConfig = createConfigProvider();
 function headersWithCookies() {
+  // v5 BYOK: Bearer estándar, sin cabeceras X-* ni cookie-jar del WAF zai
+  if (BYOK) return openAiHeaders(BYOK);
   const cfg = getConfig();
   if (cfg._reloaded) {
     cfg._reloaded = false;
@@ -71,6 +102,7 @@ function headersWithCookies() {
   return { ...base, Cookie: cookie };
 }
 function absorbCookies(res) {
+  if (BYOK) return; // sin WAF zai que absorber
   try {
     for (const sc of res.headers.getSetCookie()) {
       const [pair] = sc.split(';');
@@ -122,6 +154,145 @@ function circuitOpen() {
   return { open: false };
 }
 
+// ---------------------------------------------------------------------------
+// v5 short-circuit "quota saver": responde EN LOCAL las llamadas de fondo
+// pequeñas de Claude Code (títulos de sesión/branch, clasificadores, sondas)
+// sin tocar el upstream: coste de cuota CERO. Va ANTES del circuito — incluso
+// con la puerta zai agotada, los títulos siguen funcionando.
+// Evidencia (bundle CC 2.1.278): las llamadas de fondo usan el modelo
+// small/fast, thinking disabled, tools:[] y varias esperan TEXTO JSON
+// {title} | {title,branch} vía output_format/output_config.format.
+// ---------------------------------------------------------------------------
+const SHORTCIRCUIT_SMALL = /^(1|true)$/i.test(process.env.GLM_BRIDGE_SHORTCIRCUIT_SMALL || '');
+const SHORTCIRCUIT_MAX_TOKENS = Number(process.env.GLM_BRIDGE_SHORTCIRCUIT_MAX_TOKENS || 64);
+const SHORTCIRCUIT_SHADOW = /^(1|true)$/i.test(process.env.GLM_BRIDGE_SHORTCIRCUIT_SHADOW || '');
+const SHORTCIRCUIT_MAX_INPUT = Number(process.env.GLM_BRIDGE_SHORTCIRCUIT_MAX_INPUT_TOKENS || 2000);
+const smallCounters = { title: 0, generic: 0 };
+
+function classifySmall(body, offeredNames, requestThinking, hasImages) {
+  if (!SHORTCIRCUIT_SMALL) return null;
+  if (hasImages || requestThinking) return null;
+  if (!(offeredNames instanceof Set) || offeredNames.size > 0) return null; // la llamada principal lleva SIEMPRE 20+ tools
+  if (estimateInput(body) > SHORTCIRCUIT_MAX_INPUT) return null;
+  // vía B estructurada (contrato de título de CC): schema {title} o {title,branch}
+  const fmt = body?.output_format ?? body?.output_config?.format;
+  if (fmt && fmt.type === 'json_schema' && fmt.schema
+    && Array.isArray(fmt.schema.required) && fmt.schema.required[0] === 'title') {
+    const props = fmt.schema.properties ? Object.keys(fmt.schema.properties) : [];
+    if (props.every((k) => k === 'title' || k === 'branch')) {
+      return { kind: 'title', withBranch: props.includes('branch') };
+    }
+  }
+  // vía A genérica ultra-conservadora: sin stream, max_tokens mínimo
+  const mt = Number(body?.max_tokens);
+  if (!body?.stream && Number.isFinite(mt) && mt > 0 && mt <= SHORTCIRCUIT_MAX_TOKENS) {
+    return { kind: 'generic' };
+  }
+  return null;
+}
+
+function flattenTextContent(c) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map((b) => (b && b.type === 'text' ? b.text : '')).join(' ');
+  return '';
+}
+
+function localSmallMessage(anthropicBody, cls, requestedModel) {
+  const lastUser = [...(anthropicBody.messages || [])].reverse().find((m) => m && m.role === 'user');
+  const promptText = flattenTextContent(lastUser ? lastUser.content : '').trim();
+  let text;
+  if (cls.kind === 'title') {
+    text = JSON.stringify(deriveTitleText(promptText, cls.withBranch));
+  } else {
+    text = `[glm-bridge] respuesta local sin cuota (llamada de fondo) — ${promptText.slice(0, 80) || '(sin texto)'}`;
+  }
+  return {
+    id: 'msg_local_' + Math.random().toString(36).slice(2) + Date.now().toString(36),
+    type: 'message',
+    role: 'assistant',
+    model: requestedModel,
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: { input_tokens: estimateInput(anthropicBody), output_tokens: estimateTokens(text) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// v5 gobernador de presupuesto propio: GLM_BRIDGE_DAILY_BUDGET corta EN LOCAL
+// al agotar el cupo diario que el operador se auto-impone (independiente de
+// los buckets de la plataforma; útil para reservarse margen aunque la puerta
+// zai aún tenga cuota, o para limitar gasto en BYOK de pago).
+// ---------------------------------------------------------------------------
+const BUDGET_LIMIT = Number(process.env.GLM_BRIDGE_DAILY_BUDGET || 0);
+const RESET_HOUR_UTC = (() => {
+  const n = Number(process.env.GLM_BRIDGE_RESET_HOUR_UTC);
+  return Number.isFinite(n) && n >= 0 && n <= 23 ? n : 16; // ventana de cuota observada: 16:00 UTC
+})();
+const STATE_DIR = process.env.GLM_BRIDGE_STATE_DIR || path.join(__dirname, 'run');
+const budgetStateFile = path.join(STATE_DIR, 'quota-state.json');
+let budgetState = null;
+
+function quotaWindowStart(now = Date.now()) {
+  const d = new Date(now);
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), RESET_HOUR_UTC, 0, 0, 0));
+  if (now < start.getTime()) start.setUTCDate(start.getUTCDate() - 1);
+  return start;
+}
+function dayKeyOf(d) { return d.toISOString().slice(0, 10) + '+' + RESET_HOUR_UTC; }
+
+function loadBudget() {
+  if (!BUDGET_LIMIT || BUDGET_LIMIT <= 0) { budgetState = null; return; }
+  const key = dayKeyOf(quotaWindowStart());
+  try {
+    const raw = JSON.parse(fs.readFileSync(budgetStateFile, 'utf-8'));
+    // rollover: día distinto → contador a 0 (persistente entre reinicios)
+    budgetState = raw && raw.day === key ? raw : { day: key, posts: 0 };
+  } catch {
+    budgetState = { day: key, posts: 0 };
+  }
+  budgetState.limit = BUDGET_LIMIT;
+}
+loadBudget();
+
+function bumpBudget(reqLog) {
+  if (!BUDGET_LIMIT || BUDGET_LIMIT <= 0) return;
+  const key = dayKeyOf(quotaWindowStart());
+  if (!budgetState || budgetState.day !== key) budgetState = { day: key, posts: 0, limit: BUDGET_LIMIT };
+  budgetState.posts = (budgetState.posts || 0) + 1;
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    const tmp = budgetStateFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(budgetState));
+    fs.renameSync(tmp, budgetStateFile); // atómico: un reinicio no duplica ni pierde
+  } catch (e) {
+    reqLog(`aviso: no se pudo persistir el presupuesto: ${e.message}`);
+  }
+}
+
+function budgetExceeded() {
+  if (!BUDGET_LIMIT || BUDGET_LIMIT <= 0) return null;
+  const key = dayKeyOf(quotaWindowStart());
+  const posts = budgetState && budgetState.day === key ? (budgetState.posts || 0) : 0;
+  if (posts < BUDGET_LIMIT) return null;
+  return { used: posts, limit: BUDGET_LIMIT, resetIso: new Date(quotaWindowStart().getTime() + 86400000).toISOString() };
+}
+
+function budgetHealth() {
+  if (!BUDGET_LIMIT || BUDGET_LIMIT <= 0) return { enabled: false };
+  const key = dayKeyOf(quotaWindowStart());
+  const posts = budgetState && budgetState.day === key ? (budgetState.posts || 0) : 0;
+  return {
+    enabled: true,
+    limit: BUDGET_LIMIT,
+    used: posts,
+    remaining: Math.max(0, BUDGET_LIMIT - posts),
+    window_start_iso: quotaWindowStart().toISOString(),
+    reset_hour_utc: RESET_HOUR_UTC,
+    state_file: budgetStateFile,
+  };
+}
+
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, `bridge-${new Date().toISOString().slice(0, 10)}.log`);
 
@@ -148,10 +319,20 @@ function anthropicError(res, status, type, message) {
 }
 
 function mapUpstreamStatus(code) {
+  if (code === 400 || code === 413) return { status: 400, type: 'invalid_request_error' }; // p.ej. contexto excedido
+  if (code === 404) return { status: 404, type: 'not_found_error' };                       // modelo inexistente upstream
   if (code === 401 || code === 403) return { status: 401, type: 'authentication_error' };
   if (code === 429) return { status: 429, type: 'rate_limit_error' };
   if (code === 503 || code === 529) return { status: 529, type: 'overloaded_error' };
   return { status: 502, type: 'api_error' };
+}
+
+/** v5: mensaje legible de un error OpenAI-compat: {error:{message}} | {message} | texto. */
+function providerErrorMessage(txt) {
+  try {
+    const j = JSON.parse(txt);
+    return j?.error?.message || j?.message || txt;
+  } catch { return txt; }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,13 +355,17 @@ function readBody(req, limit = 256 * 1024 * 1024) {
 // ---------------------------------------------------------------------------
 // Upstream con reintentos (backoff exponencial + jitter)
 // ---------------------------------------------------------------------------
-const RETRYABLE = new Set([403, 429, 500, 502, 503, 504]);
+const RETRYABLE = BYOK
+  ? new Set([429, 500, 502, 503, 504])            // BYOK: un 403 es permanente (key/región)
+  : new Set([403, 429, 500, 502, 503, 504]);      // zai: 403 = throttle del WAF, reintentable
 
 async function fetchUpstream(bodyObj, reqLog, targetUrl) {
   let lastErr = null;
+  let retryAfterMs = null; // v5 BYOK: Retry-After del proveedor externo
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const wait = RETRY_BASE_MS * 2 ** (attempt - 1) + Math.random() * 250;
+      const wait = retryAfterMs ?? (RETRY_BASE_MS * 2 ** (attempt - 1) + Math.random() * 250);
+      retryAfterMs = null;
       reqLog(`reintento ${attempt}/${MAX_RETRIES} en ${Math.round(wait)}ms (causa: ${lastErr?.kind}${lastErr?.status ? ' ' + lastErr.status : ''})`);
       await new Promise((r) => setTimeout(r, wait));
     }
@@ -192,15 +377,22 @@ async function fetchUpstream(bodyObj, reqLog, targetUrl) {
       });
       absorbCookies(res);
       if (!res.ok && RETRYABLE.has(res.status) && attempt < MAX_RETRIES) {
-        // FAIL-FAST en agotamiento diario: si algún bucket daily está a 0,
-        // reintentar sólo quema cuota user (cada 429 la descuenta).
+        // FAIL-FAST en agotamiento diario (sólo zai): si algún bucket daily
+        // está a 0, reintentar sólo quema cuota user (cada 429 la descuenta).
+        // En BYOK no hay buckets de plataforma y reintentar gasta la cuota del
+        // PROPIO usuario (barata): se honra Retry-After y se reintenta.
         if (res.status === 429) {
-          const q = quotaOf(res);
-          if (q.keyDailyRemaining === 0 || q.userDailyRemaining === 0) {
-            armCircuit(q);
-            reqLog(`429 con daily agotado (key=${q.keyDailyRemaining} user=${q.userDailyRemaining}): fail-fast + circuito abierto ${DAILY_COOLDOWN_MS}ms, sin reintentos`);
-            lastErr = { kind: 'http', status: 429, txt: 'daily agotado' };
-            break;
+          if (!BYOK) {
+            const q = quotaOf(res);
+            if (q.keyDailyRemaining === 0 || q.userDailyRemaining === 0) {
+              armCircuit(q);
+              reqLog(`429 con daily agotado (key=${q.keyDailyRemaining} user=${q.userDailyRemaining}): fail-fast + circuito abierto ${DAILY_COOLDOWN_MS}ms, sin reintentos`);
+              lastErr = { kind: 'http', status: 429, txt: 'daily agotado' };
+              break;
+            }
+          } else {
+            const ra = Number(res.headers.get('retry-after'));
+            retryAfterMs = Number.isFinite(ra) && ra > 0 ? Math.min(ra, 30) * 1000 : null;
           }
         }
         const txt = await res.text().catch(() => '');
@@ -262,11 +454,14 @@ async function handleMessages(req, res) {
     return anthropicError(res, 400, 'invalid_request_error', 'JSON inválido: ' + e.message);
   }
 
-  // v4: modelo resuelto dinámicamente (env > fichero de sesión > fallback)
-  const sessionModel = resolveModel(getConfig());
-  const requestedModel = anthropicBody.model || sessionModel;
-  // cualquier modelo no-GLM se dirige al modelo por defecto del bridge
-  const upstreamModel = /^glm/i.test(requestedModel) ? requestedModel : sessionModel;
+  // v5: modelo resuelto por proveedor.
+  //   zai:    env GLM_MODEL > fichero de sesión > fallback (como v4; glm-* literal)
+  //   openai: GLM_BRIDGE_MODEL_MAP > clase small/haiku > modelo principal
+  const sessionModel = BYOK ? null : resolveModel(getConfig());
+  const requestedModel = anthropicBody.model || (BYOK ? BYOK.mainModel : sessionModel);
+  const upstreamModel = BYOK
+    ? mapUpstreamModelOpenAi(BYOK, requestedModel)
+    : (/^glm/i.test(requestedModel) ? requestedModel : sessionModel);
 
   const offeredNames = new Set(
     (Array.isArray(anthropicBody.tools) ? anthropicBody.tools : [])
@@ -290,39 +485,75 @@ async function handleMessages(req, res) {
     model: upstreamModel,
     thinking: effectiveThinking,
     toolHint: TOOL_HINT,
+    provider: PROVIDER,
+    reasoningEffort: BYOK ? (process.env.GLM_BRIDGE_UPSTREAM_REASONING_EFFORT || undefined) : undefined,
   });
   // ANTI-WAF: el gateway/WAF deja en cola y vacía a los 300s las peticiones
   // SSE (stream:true) bajo carga; las stream:false pasan siempre. Pedimos
   // SIEMPRE no-stream y sintetizamos los eventos Anthropic localmente.
-  if (process.env.GLM_BRIDGE_UPSTREAM_STREAM !== '1') upstreamBody.stream = false;
+  // v5: en BYOK se fuerza también (ruta sintética es provider-agnóstica).
+  if (BYOK || process.env.GLM_BRIDGE_UPSTREAM_STREAM !== '1') upstreamBody.stream = false;
   // Algunos backends GLM rechazan/encolan max_tokens grandes (32768 de CC);
   // cap configurable (GLM_BRIDGE_MAX_OUT) — CC lo usa como tope, no como meta.
   const MAX_OUT = Number(process.env.GLM_BRIDGE_MAX_OUT || 0);
   if (MAX_OUT > 0) upstreamBody.max_tokens = Math.min(upstreamBody.max_tokens, MAX_OUT);
 
-  // routing de visión: el gateway sólo acepta imágenes en /chat/completions/vision
-  // v4: upstream resuelto AHORA (por petición) desde la config viva de la sesión
-  const cfgNow = getConfig();
+  // routing de visión: el gateway zai sólo acepta imágenes en
+  // /chat/completions/vision; en BYOK el mismo /chat/completions acepta
+  // image_url (translate.mjs ya lo emite).
+  // v5: upstream resuelto AHORA (por petición): zai = config viva de la sesión;
+  // openai = provider fijo configurado al arranque.
+  const cfgNow = BYOK ? null : getConfig();
   const hasImages = (anthropicBody.messages || []).some(
     (m) => Array.isArray(m.content) && m.content.some((b) => b && b.type === 'image')
   );
-  const targetUrl = hasImages ? upstreamVisionOf(cfgNow) : upstreamOf(cfgNow);
+  const targetUrl = BYOK
+    ? openAiTargetUrl(BYOK)
+    : (hasImages ? upstreamVisionOf(cfgNow) : upstreamOf(cfgNow));
 
   const shortId = Math.random().toString(36).slice(2, 8);
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
   if (hasImages) reqLog(`routing: petición con imágenes -> ${targetUrl}`);
-  reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | thinking=${effectiveThinking ? 'on' : 'off'}${requestThinking && !THINKING ? '(req)' : ''} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
+  reqLog(`${req.method} ${req.url} | provider=${PROVIDER} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | thinking=${effectiveThinking ? 'on' : 'off'}${requestThinking && !THINKING ? '(req)' : ''} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
 
-  // circuit breaker: bucket daily agotado => 429 local SIN tocar upstream
-  const circuit = circuitOpen();
-  if (circuit.open) {
-    const untilIso = new Date(circuit.until).toISOString();
-    reqLog(`circuito abierto (${circuit.bucket} hasta ${untilIso}): 429 local, upstream intacto`);
+  // v5 short-circuit: llamadas de fondo pequeñas respondidas EN LOCAL (coste 0)
+  const small = classifySmall(anthropicBody, offeredNames, requestThinking, hasImages);
+  if (small) {
+    if (SHORTCIRCUIT_SHADOW) {
+      reqLog(`shortcircuit-shadow ${small.kind}: (habría respuesta local) pasa al upstream`);
+    } else {
+      smallCounters[small.kind] += 1;
+      reqLog(`shortcircuit ${small.kind}: respuesta local sin upstream ni cuota`);
+      const localFinal = localSmallMessage(anthropicBody, small, requestedModel);
+      if (!anthropicBody.stream) {
+        return sendJson(res, 200, localFinal, reqLog, t0, { stats: { inputTokens: localFinal.usage.input_tokens, outputTokens: localFinal.usage.output_tokens, tools: 0, reasoning: 0 } });
+      }
+      return sendSyntheticStream(res, localFinal, reqLog, t0, 0, shortId);
+    }
+  }
+
+  // circuit breaker (sólo zai: en BYOK no hay buckets x-ratelimit que proteger)
+  if (!BYOK) {
+    const circuit = circuitOpen();
+    if (circuit.open) {
+      const untilIso = new Date(circuit.until).toISOString();
+      reqLog(`circuito abierto (${circuit.bucket} hasta ${untilIso}): 429 local, upstream intacto`);
+      return anthropicError(res, 429, 'rate_limit_error',
+        `GLM-Bridge: cuota diaria del gateway agotada (${circuit.bucket}). ` +
+        `Cada intento adicional quemaría cuota user, así que el bridge responde en local hasta ${untilIso}. ` +
+        `Nota: este bucket (clave 'Z.ai') es compartido por los sandboxes de la plataforma; ` +
+        `el chat interactivo de la sesión NO usa este gateway.`);
+    }
+  }
+
+  // v5 presupuesto propio agotado → 429 local (no arma circuito, no toca throttle)
+  const bex = budgetExceeded();
+  if (bex) {
+    reqLog(`presupuesto propio agotado (${bex.used}/${bex.limit}): 429 local hasta ${bex.resetIso}`);
     return anthropicError(res, 429, 'rate_limit_error',
-      `GLM-Bridge: cuota diaria del gateway agotada (${circuit.bucket}). ` +
-      `Cada intento adicional quemaría cuota user, así que el bridge responde en local hasta ${untilIso}. ` +
-      `Nota: este bucket (clave 'Z.ai') es compartido por los sandboxes de la plataforma; ` +
-      `el chat interactivo de la sesión NO usa este gateway.`);
+      `GLM-Bridge: presupuesto propio agotado (${bex.used}/${bex.limit} POSTs en la ventana de cuota). ` +
+      `El bridge responde en local hasta ${bex.resetIso} (reset ${RESET_HOUR_UTC}:00 UTC). ` +
+      `Sube GLM_BRIDGE_DAILY_BUDGET si necesitas más margen.`);
   }
 
   // throttle anti-WAF: separar inicios de peticiones upstream
@@ -336,6 +567,9 @@ async function handleMessages(req, res) {
     lastUpstreamStart = Date.now();
   }
 
+  // v5: contabilizar el POST dentro del presupuesto propio justo antes de cruzar
+  bumpBudget(reqLog);
+
   let upRes;
   try {
     upRes = await fetchUpstream(upstreamBody, reqLog, targetUrl);
@@ -348,20 +582,20 @@ async function handleMessages(req, res) {
   if (!upRes.ok) {
     const txt = await upRes.text().catch(() => '');
     reqLog(`upstream ${upRes.status}: ${txt.slice(0, 300)}`);
-    if (upRes.status === 429) {
+    if (upRes.status === 429 && !BYOK) {
       const q = quotaOf(upRes);
       armCircuit(q);
       reqLog(`429 buckets: key_daily=${q.keyDailyRemaining} user_10min=${q.user10minRemaining}/${q.user10minLimit} user_daily=${q.userDailyRemaining}${circuitOpen().open ? ' (circuito armado)' : ''}`);
     }
     const mapped = mapUpstreamStatus(upRes.status);
-    return anthropicError(res, mapped.status, mapped.type, `upstream GLM ${upRes.status}: ${txt.slice(0, 300)}`);
+    return anthropicError(res, mapped.status, mapped.type, `upstream ${PROVIDER} ${upRes.status}: ${providerErrorMessage(txt).slice(0, 300)}`);
   }
 
   let upJson;
   try { upJson = JSON.parse(await upRes.text()); }
   catch (e) { return anthropicError(res, 502, 'api_error', 'respuesta upstream no-JSON: ' + e.message); }
   if (upJson.model) { lastEchoModel = upJson.model; reqLog(`eco gateway model=${upJson.model}`); }
-  lastQuota = quotaOf(upRes);
+  if (!BYOK) lastQuota = quotaOf(upRes);
   const final = anthropicFromComplete(upJson, requestedModel, offeredNames);
   const reasoningLen = final.content.filter((b) => b.type === 'thinking').reduce((a, b) => a + (b.thinking || '').length, 0);
 
@@ -371,6 +605,13 @@ async function handleMessages(req, res) {
   }
 
   // ---------- Streaming sintético (SSE Anthropic desde respuesta completa) ----------
+  return sendSyntheticStream(res, final, reqLog, t0, reasoningLen, shortId);
+}
+
+/** v5: emite el SSE Anthropic sintético a partir de un mensaje completo.
+ *  Provider-agnóstico: sirve tanto para respuestas del upstream como para las
+ *  locales del short-circuit (cero cuota). */
+function sendSyntheticStream(res, final, reqLog, t0, reasoningLen, shortId) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -413,7 +654,7 @@ async function handleMessages(req, res) {
   } });
   writeEvent({ event: 'message_stop', data: { type: 'message_stop' } });
   try { res.end(); } catch {}
-  log(`req ${shortId} | OK synth-stream | ${Date.now() - t0}ms | in=${final.usage.input_tokens} out=${final.usage.output_tokens} tools=${final.content.filter(b => b.type === 'tool_use').length} reasoning=${reasoningLen} chars=${final.content.filter(b => b.type === 'text').reduce((a, b) => a + (b.text || '').length, 0)}`);
+  log(`req ${shortId} | OK synth-stream | ${Date.now() - t0}ms | in=${final.usage.input_tokens} out=${final.usage.output_tokens} tools=${final.content.filter((b) => b.type === 'tool_use').length} reasoning=${reasoningLen} chars=${final.content.filter((b) => b.type === 'text').reduce((a, b) => a + (b.text || '').length, 0)}`);
 }
 
 /** Extrae los contadores de cuota de una respuesta upstream. */
@@ -497,17 +738,24 @@ const server = http.createServer(async (req, res) => {
       // (el bridge arranca en cualquier sesión y espera a que el runtime
       // inyecte /etc/.z-ai-config — no muere en el arranque).
       let c = null, cfgErr = null;
-      try { c = getConfig(); } catch (e) { cfgErr = e.message; }
+      if (!BYOK) { try { c = getConfig(); } catch (e) { cfgErr = e.message; } }
       const body = JSON.stringify({
-        status: c ? 'ok' : 'waiting-session',
-        bridge: 'glm-bridge', version: 4,
+        status: (c || BYOK) ? 'ok' : 'waiting-session',
+        bridge: 'glm-bridge', version: 5,
+        provider: PROVIDER,
         ...(cfgErr ? { config_error: cfgErr } : {}),
-        model: c ? resolveModel(c) : (process.env.GLM_MODEL || DEFAULT_MODEL),
+        ...(BYOK ? {
+          upstream_model: BYOK.mainModel,
+          upstream_model_small: BYOK.smallModel,
+          upstream_auth: BYOK.key ? 'bearer' : 'none',
+          api_key_fingerprint: keyFingerprint(BYOK.key),
+        } : {}),
+        model: BYOK ? BYOK.mainModel : (c ? resolveModel(c) : (process.env.GLM_MODEL || DEFAULT_MODEL)),
         model_env: process.env.GLM_MODEL || null,
         model_config: c?.model || null,
         gateway_echo_model: lastEchoModel,
-        upstream: c ? upstreamUrl(c) : null,
-        session: c ? {
+        upstream: BYOK ? openAiTargetUrl(BYOK) : (c ? upstreamUrl(c) : null),
+        session: (c && !BYOK) ? {
           chatId: c.chatId || null,
           token: tokenFingerprint(c.token),
           userId: c.userId || null,
@@ -515,9 +763,19 @@ const server = http.createServer(async (req, res) => {
         } : null,
         quota_last_seen: lastQuota,
         circuit: {
+          enabled: !BYOK,
           cooldown_ms: DAILY_COOLDOWN_MS,
           key_daily_open_until: exhaustedUntil.keyDaily > Date.now() ? new Date(exhaustedUntil.keyDaily).toISOString() : null,
           user_daily_open_until: exhaustedUntil.userDaily > Date.now() ? new Date(exhaustedUntil.userDaily).toISOString() : null,
+        },
+        budget: budgetHealth(),
+        shortcircuit: {
+          enabled: SHORTCIRCUIT_SMALL,
+          shadow: SHORTCIRCUIT_SHADOW,
+          max_tokens: SHORTCIRCUIT_MAX_TOKENS,
+          max_input_tokens: SHORTCIRCUIT_MAX_INPUT,
+          answered_total: smallCounters.title + smallCounters.generic,
+          by_kind: { title: smallCounters.title, generic: smallCounters.generic },
         },
         pid: process.pid,
       });
@@ -544,14 +802,18 @@ server.headersTimeout = 60000;
 server.keepAliveTimeout = 75000;
 
 server.listen(PORT, HOST, () => {
-  log(`GLM-Bridge v4 (portable, session-born) escuchando en http://${HOST}:${PORT} | modelo=${process.env.GLM_MODEL || DEFAULT_MODEL} (por petición: env > fichero de sesión > defecto)`);
-  try {
-    const c = getConfig();
-    log(`creds: ${c._source} | sesión: chatId=${c.chatId || 'sin'} | token=${tokenFingerprint(c.token)} | userId=${c.userId || 'sin'}`);
-  } catch (e) {
-    log(`creds: AÚN SIN SESIÓN (${e.message}) — el bridge espera y se adapta cuando el runtime inyecte las credenciales`);
+  if (BYOK) {
+    log(`GLM-Bridge v5 (multi-provider) escuchando en http://${HOST}:${PORT} | provider=openai | upstream=${BYOK.baseUrl} | modelo=${BYOK.mainModel}${BYOK.smallModel !== BYOK.mainModel ? '/small=' + BYOK.smallModel : ''} | auth=${BYOK.key ? 'bearer' : 'none'}`);
+  } else {
+    log(`GLM-Bridge v5 (multi-provider) escuchando en http://${HOST}:${PORT} | provider=zai | modelo=${process.env.GLM_MODEL || DEFAULT_MODEL} (por petición: env > fichero de sesión > defecto)`);
+    try {
+      const c = getConfig();
+      log(`creds: ${c._source} | sesión: chatId=${c.chatId || 'sin'} | token=${tokenFingerprint(c.token)} | userId=${c.userId || 'sin'}`);
+    } catch (e) {
+      log(`creds: AÚN SIN SESIÓN (${e.message}) — el bridge espera y se adapta cuando el runtime inyecte las credenciales`);
+    }
   }
-  log(`thinking=${THINKING ? 'on' : 'off'} (override por petición activo) | toolHint=${TOOL_HINT ? 'on' : 'off'} | retries=${MAX_RETRIES}`);
+  log(`thinking=${THINKING ? 'on' : 'off'} (override por petición activo) | toolHint=${TOOL_HINT ? 'on' : 'off'} | retries=${MAX_RETRIES} | shortcircuit=${SHORTCIRCUIT_SMALL ? (SHORTCIRCUIT_SHADOW ? 'shadow' : 'on') : 'off'} | presupuesto=${BUDGET_LIMIT > 0 ? `${BUDGET_LIMIT}/día (reset ${RESET_HOUR_UTC}:00 UTC)` : 'off'}`);
 });
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

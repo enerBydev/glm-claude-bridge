@@ -1,6 +1,7 @@
 # artefactos de sesión (nunca versionar: son específicos de ESTA sesión)
 logs/
 run/
+spool/
 *.pid
 .env
 upload/

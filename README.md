@@ -195,7 +195,21 @@ README.es.md        Documentación en español
 | `GLM_THINKING` | `0` | `1` enables upstream thinking (reasoning deltas are still not forwarded) |
 | `GLM_BRIDGE_TOOL_HINT` | on | Appends a system note that forbids tool-name localization |
 | `GLM_BRIDGE_RETRIES` | `4` | Retries on 403/429/5xx (backoff + jitter) |
-| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Quota circuit breaker: once a daily bucket reads 0, reply 429 locally (upstream untouched) for this cooldown; `0` disables |
+| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Quota circuit breaker: once a daily bucket reads 0, reply 429 locally (upstream untouched) for this cooldown; `0` disables (provider `zai` only) |
+| `GLM_BRIDGE_PROVIDER` | auto (`zai`) | `zai` (session-born identity) or `openai` (BYOK: any OpenAI-compatible endpoint). Unset → auto-detects `openai` when `GLM_BRIDGE_UPSTREAM_BASE_URL` is set |
+| `GLM_BRIDGE_UPSTREAM_BASE_URL` | — | BYOK base URL, e.g. `https://openrouter.ai/api/v1`, `https://api.groq.com/openai/v1`, `http://host:11434/v1` (Ollama). Required with `openai` |
+| `GLM_BRIDGE_UPSTREAM_API_KEY` | — | BYOK key sent as `Authorization: Bearer …`. Optional for keyless endpoints (local Ollama). Never logged (`/health` shows a 4-char fingerprint). Alt: `GLM_BRIDGE_UPSTREAM_API_KEY_FILE` |
+| `GLM_BRIDGE_UPSTREAM_MODEL` | — | BYOK target model: EVERYTHING Claude Code requests (`claude-*`, `glm-*`, …) maps here. Required with `openai` |
+| `GLM_BRIDGE_UPSTREAM_MODEL_SMALL` | = `…_MODEL` | BYOK target for haiku-class/background requests (name matches `haiku\|small\|fast`) |
+| `GLM_BRIDGE_MODEL_MAP` | — | Optional `REGEX=MODEL,...` map; first match wins, overrides tier mapping |
+| `GLM_BRIDGE_UPSTREAM_EXTRA_HEADERS` | — | JSON object with extra upstream headers (e.g. OpenRouter `HTTP-Referer`/`X-Title` attribution) |
+| `GLM_BRIDGE_UPSTREAM_REASONING_EFFORT` | — | With `openai`: sends `reasoning_effort` (`low\|medium\|high`) to models that support it |
+| `GLM_BRIDGE_SHORTCIRCUIT_SMALL` | `0` | `1`: answer CC's small background calls LOCALLY (zero quota): `{title[,branch]}` title contract and generic no-tools calls ≤ `…_MAX_TOKENS` |
+| `GLM_BRIDGE_SHORTCIRCUIT_MAX_TOKENS` | `64` | `max_tokens` cap for the generic short-circuit path |
+| `GLM_BRIDGE_SHORTCIRCUIT_SHADOW` | `0` | `1`: log what would have been answered locally but keep going upstream (observe before enabling) |
+| `GLM_BRIDGE_DAILY_BUDGET` | `0` (off) | Self-imposed daily cap of upstream POSTs; once spent, replies 429 locally (persists across restarts) |
+| `GLM_BRIDGE_RESET_HOUR_UTC` | `16` | UTC hour that starts the quota window (for the self budget) |
+| `GLM_BRIDGE_STATE_DIR` | `./run` | Directory for the budget state file (`quota-state.json`) |
 | `GLM_BRIDGE_TOKEN` | empty | If set, requires this token on bridge requests |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Upstream idle watchdog |
 | `GLM_BRIDGE_DEBUG` | `0` | Verbose chunk logging |
@@ -293,6 +307,46 @@ Therefore bridge **v3**:
 `glm-claude` still targets the bridge transparently; nothing to configure —
 the bridge is literally born from the same `/etc/.z-ai-config` mechanism the
 host session uses.
+
+## v5 — BYOK multi-provider: your own key, no platform ceiling
+
+Since v5 the bridge can serve Claude Code from **any OpenAI-compatible
+endpoint** with YOUR API key (OpenRouter, Groq, a remote Ollama, vLLM…):
+set `GLM_BRIDGE_UPSTREAM_BASE_URL` + `GLM_BRIDGE_UPSTREAM_API_KEY` +
+`GLM_BRIDGE_UPSTREAM_MODEL` and `glm-bridge restart` — or set nothing and
+keep using the platform's session-born identity (default `zai`; an explicit
+`GLM_BRIDGE_PROVIDER` wins over auto-detection). With `provider=openai` the
+platform quotas **stop applying** (no shared 300/day key bucket, no 200/day
+user bucket: the ceiling is your plan with your provider) and the bridge
+automatically disables everything Z.ai-specific: `X-*` headers, WAF
+cookie-jar, the `/chat/completions/vision` endpoint, the `x-ratelimit-*`
+circuit breaker and the 3s anti-WAF throttle. Generic defenses are kept:
+retries with backoff on 429/5xx (honoring the provider's `Retry-After`),
+error mapping to Anthropic types (400/404/413 → `invalid_request_error`/
+`not_found_error` with the provider's message) and `GLM_BRIDGE_MAX_OUT`.
+The bridge starts **without `/etc/.z-ai-config`** in this mode; `/health`
+exposes the active provider (`provider`, `upstream_model`, `upstream_auth`,
+4-char key fingerprint — never the key). Recommendations: pick a model with
+function calling and a ≥ 128k window, set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+to its real window, and use `GLM_BRIDGE_MODEL_MAP` to route the main and
+"small" models to different provider models.
+
+## v5 — squeeze the quota door: short-circuit + self budget
+
+Two helpers for the `zai` door (300/day shared key + 200/day user bucket):
+**`GLM_BRIDGE_SHORTCIRCUIT_SMALL=1`** answers Claude Code's small background
+calls LOCALLY — session/branch titles (the `output_format`/
+`output_config.format` contract with a `{title[,branch]}` schema) and generic
+no-tools calls with `max_tokens` ≤ 64 — at ZERO quota cost, even with the
+circuit open (it runs before the breaker). With
+`GLM_BRIDGE_SHORTCIRCUIT_SHADOW=1` you can observe what would be answered
+locally without enabling it. And **`GLM_BRIDGE_DAILY_BUDGET=N`** self-imposes
+a daily cap of upstream POSTs (window starts at `GLM_BRIDGE_RESET_HOUR_UTC`,
+16:00 UTC by default): once spent, the bridge replies 429 locally with an
+explanatory message and the counter persists across restarts
+(`run/quota-state.json`, atomic write) to avoid double counting. Per-request
+cutoff order: short-circuit → platform quota circuit → self budget →
+throttle → upstream.
 
 ## Hard-won implementation notes
 

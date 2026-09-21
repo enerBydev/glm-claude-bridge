@@ -187,7 +187,21 @@ fichero de sesión, Claude Code, shims en PATH, bridge) SIN gastar cuota de API.
 | `GLM_THINKING` | `0` | `1` activa thinking upstream (reasoning_content se traduce a bloques thinking de Anthropic) |
 | `GLM_BRIDGE_TOOL_HINT` | on (`!=0`) | Hint anti-traducción de nombres de herramientas |
 | `GLM_BRIDGE_RETRIES` | `4` | Reintentos ante 403/429/5xx |
-| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Circuit breaker: con un bucket daily a 0, responde 429 en local (sin tocar upstream) durante este cooldown; `0` lo desactiva |
+| `GLM_BRIDGE_EXHAUSTED_COOLDOWN_MS` | `600000` | Circuit breaker: con un bucket daily a 0, responde 429 en local (sin tocar upstream) durante este cooldown; `0` lo desactiva (sólo provider `zai`) |
+| `GLM_BRIDGE_PROVIDER` | auto (`zai`) | `zai` (identidad session-born) o `openai` (BYOK: cualquier endpoint OpenAI-compat). Sin definir → auto-detecta `openai` si existe `GLM_BRIDGE_UPSTREAM_BASE_URL` |
+| `GLM_BRIDGE_UPSTREAM_BASE_URL` | — | Base URL BYOK, p.ej. `https://openrouter.ai/api/v1`, `https://api.groq.com/openai/v1`, `http://host:11434/v1` (Ollama). Obligatoria con `openai` |
+| `GLM_BRIDGE_UPSTREAM_API_KEY` | — | Key BYOK enviada como `Authorization: Bearer …`. Opcional para endpoints sin auth (Ollama local). Nunca se loguea (`/health` muestra huella de 4 chars). Alt: `GLM_BRIDGE_UPSTREAM_API_KEY_FILE` |
+| `GLM_BRIDGE_UPSTREAM_MODEL` | — | Modelo destino BYOK: TODO lo que Claude Code pida (`claude-*`, `glm-*`…) se mapea aquí. Obligatorio con `openai` |
+| `GLM_BRIDGE_UPSTREAM_MODEL_SMALL` | = `…_MODEL` | Modelo destino para las peticiones de clase haiku/background (nombre con `haiku|small|fast`) |
+| `GLM_BRIDGE_MODEL_MAP` | — | Mapa opcional `REGEX=MODELO,...` (primer match gana; precede al tier) |
+| `GLM_BRIDGE_UPSTREAM_EXTRA_HEADERS` | — | JSON de cabeceras extra al upstream (p.ej. atribución OpenRouter `HTTP-Referer`/`X-Title`) |
+| `GLM_BRIDGE_UPSTREAM_REASONING_EFFORT` | — | Con `openai`: envía `reasoning_effort` (`low\|medium\|high`) a modelos que lo soportan |
+| `GLM_BRIDGE_SHORTCIRCUIT_SMALL` | `0` | `1`: responde EN LOCAL (coste de cuota cero) las llamadas de fondo pequeñas de CC: títulos `{title[,branch]}` y genéricas ≤ `…_MAX_TOKENS` |
+| `GLM_BRIDGE_SHORTCIRCUIT_MAX_TOKENS` | `64` | Tope de `max_tokens` para la vía genérica del short-circuit |
+| `GLM_BRIDGE_SHORTCIRCUIT_SHADOW` | `0` | `1`: loguea qué habría respondido en local pero sigue al upstream (observación previa a activar) |
+| `GLM_BRIDGE_DAILY_BUDGET` | `0` (off) | Presupuesto propio: máximo de POSTs upstream por día de cuota; al agotarse responde 429 en local (persistente entre reinicios) |
+| `GLM_BRIDGE_RESET_HOUR_UTC` | `16` | Hora UTC de inicio de la ventana de cuota (para el presupuesto propio) |
+| `GLM_BRIDGE_STATE_DIR` | `./run` | Directorio del estado persistente del presupuesto (`quota-state.json`) |
 | `GLM_BRIDGE_TOKEN` | vacío | Si se define, exige auth en el bridge |
 | `GLM_BRIDGE_IDLE_MS` | `300000` | Watchdog de inactividad del upstream |
 | `GLM_BRIDGE_DEBUG` | `0` | Log verboso de chunks del stream |
@@ -296,6 +310,46 @@ Por eso el bridge **v3**:
 `glm-claude` sigue apuntando al bridge de forma transparente; nada que
 configurar — el bridge nace literalmente del mismo mecanismo
 `/etc/.z-ai-config` que la sesión anfitriona.
+
+### Modo BYOK: tu propia key, sin techo de plataforma (v5)
+
+Desde la v5 el bridge puede servir Claude Code desde **cualquier endpoint
+OpenAI-compatible** con TU API key (OpenRouter, Groq, un Ollama remoto,
+vLLM…): define `GLM_BRIDGE_UPSTREAM_BASE_URL` + `GLM_BRIDGE_UPSTREAM_API_KEY`
++ `GLM_BRIDGE_UPSTREAM_MODEL` y haz `glm-bridge restart` — o no definas nada
+y seguirás usando la identidad session-born de la plataforma (default `zai`;
+con `GLM_BRIDGE_PROVIDER` explícito, el valor gana a la auto-detección). Con
+`provider=openai` las cuotas de la plataforma **dejan de aplicar** (no hay
+buckets key 300/día compartido ni user 200/día: el límite es el de tu plan
+con tu proveedor) y el bridge desactiva automáticamente todo lo específico
+del gateway Z.ai: cabeceras `X-*`, cookie-jar del WAF, endpoint de visión
+`/chat/completions/vision`, circuit breaker de buckets `x-ratelimit-*` y
+throttle anti-WAF de 3s. Se conservan las defensas genéricas: reintentos con
+backoff ante 429/5xx (honrando `Retry-After` del proveedor), mapeo de errores
+a tipos Anthropic (400/404/413 → `invalid_request_error`/`not_found_error`
+con el mensaje del proveedor) y `GLM_BRIDGE_MAX_OUT`. El bridge arranca **sin
+`/etc/.z-ai-config`** en este modo, y `/health` expone el provider activo
+(`provider`, `upstream_model`, `upstream_auth`, huella de 4 chars de la key —
+nunca la key). Recomendaciones: elige un modelo con function calling y
+ventana ≥ 128k, ajusta `CLAUDE_CODE_MAX_CONTEXT_TOKENS` a su ventana real, y
+usa `GLM_BRIDGE_MODEL_MAP` para dirigir el modelo principal y el "small" a
+modelos distintos del proveedor.
+
+### Short-circuit y presupuesto: exprimir la puerta con cuota (v5)
+
+Dos ayudas para cuando se usa la puerta `zai` (key 300/día global compartida
++ user 200/día): **`GLM_BRIDGE_SHORTCIRCUIT_SMALL=1`** responde EN LOCAL las
+llamadas de fondo pequeñas de Claude Code — títulos de sesión/branch (contrato
+`output_format`/`output_config.format` con schema `{title[,branch]}`) y
+genéricas sin tools con `max_tokens` ≤ 64 — con coste de cuota CERO y aún con
+el circuito abierto (va antes del breaker). Con
+`GLM_BRIDGE_SHORTCIRCUIT_SHADOW=1` se observa qué habría respondido sin
+activarlo. Y **`GLM_BRIDGE_DAILY_BUDGET=N`** auto-impone un cupo diario de
+POSTs upstream (ventana desde `GLM_BRIDGE_RESET_HOUR_UTC`, 16:00 UTC por
+defecto): al agotarse responde 429 en local con mensaje explicativo y el
+contador persiste entre reinicios (`run/quota-state.json`, escritura atómica)
+para no doble-contar. Orden de cortes en cada petición: short-circuit →
+circuito de cuota (plataforma) → presupuesto propio → throttle → upstream.
 
 ## Verificación realizada
 
