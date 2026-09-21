@@ -131,9 +131,47 @@ día ruteara por nombre), pero el modelo servido hoy lo decide Z.ai. La sonda
 muestra. Las respuestas de Claude Code sobre su identidad NO son evidencia:
 el system prompt de CC le dice "eres Claude" y el modelo lo repite.
 
+## v3 — credenciales session-born (descubrimiento del 2026-09-21)
+
+La forense profunda del sandbox (`/start.sh`, runtime del workspace, código
+fuente del SDK) encontró de dónde nacen realmente las llamadas del agente:
+
+- `/start.sh` escribe la config base `{"baseUrl": "...", "apiKey": "Z.ai"}`
+  en `/etc/.z-ai-config` — **`Z.ai` es un literal, no un secreto**; la
+  autenticación real es la identidad de red del contenedor.
+- El runtime del workspace luego inyecta en ese mismo fichero la **identidad
+  de sesión**: `chatId` (el id de ESTA conversación), `userId` y un **JWT
+  `token`** (HS256, payload `{user_id, chat_id, platform: "zai"}`).
+- El SDK oficial envía esa identidad en cada llamada: `X-Chat-Id`,
+  `X-User-Id`, `X-Token` (junto a `Authorization: Bearer Z.ai` y
+  `X-Z-AI-From: Z`).
+- **El gateway ahora lo exige**: sin `X-Token` responde
+  `401 {"error":"missing X-Token header"}`. La identidad de sesión abre
+  además un **bucket de cuota user-level separado** (200/día, 30/10 min)
+  junto al key-level (300/día).
+
+Por eso el bridge **v3**:
+
+1. **Recarga credenciales por `mtime`** — cuando la plataforma re-inyecta el
+   token (cada nueva conversación/continuación), el bridge lo recoge en la
+   siguiente petición en vez de quedarse obsoleto (causa raíz de los 401
+   misteriosos de la v2 tras un refresco de sesión).
+2. **Fail-fast en `429`** con bucket daily a 0 — reintentar a ciegas sólo
+   quema el bucket user (cada 429 lo descuenta).
+3. **Soporte de thinking**: honra `thinking: {type:'enabled'}` de Claude Code
+   (o `GLM_THINKING=1`) y mapea `reasoning_content` del upstream a bloques
+   `thinking` de Anthropic (con `thinking_delta`/`signature_delta` en
+   streams), en la posición correcta (thinking → text → tool_use).
+4. **/health expone el binding de sesión** (chatId, huella del token, mtime
+   del config) y los buckets de cuota vistos por última vez.
+
+`glm-claude` sigue apuntando al bridge de forma transparente; nada que
+configurar — el bridge nace literalmente del mismo mecanismo
+`/etc/.z-ai-config` que la sesión anfitriona.
+
 ## Verificación realizada
 
-- 26 tests unitarios de traducción (`scripts/test-translate.mjs`): OK
+- 37 tests unitarios de traducción (`tests/test-translate.mjs`, incluye v3 thinking): OK
 - No-streaming, streaming SSE, count_tokens: OK
 - Bucle agéntico completo con 20 herramientas: Write + Read + Bash OK
   (el modelo creó ficheros, los leyó y reportó contenido real)

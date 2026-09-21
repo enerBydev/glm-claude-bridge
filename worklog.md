@@ -167,3 +167,24 @@ Stage Summary:
 - REPOS: enerBydev/glm-claude-bridge (privado, 8e405d4) y enerBydev/mario-nuxt-pixel (público, a1ff25e) actualizados.
 - Lección: build OK != runtime OK; el smoke test de navegador es obligatorio para artefactos agénticos. La validación headless npm test queda integrada en el repo.
 - Nota seguridad: el token GH fue pegado de nuevo en chat; recomendar revocación al finalizar.
+
+---
+Task ID: 6-session-born-v3
+Agent: Super Z (principal)
+Task: Forense de nacimiento de la sesión + bridge v3 "session-born": Claude Code usando el MISMO mecanismo donde nace este chat (JWT de sesión), sin SDK
+
+Work Log:
+- FORENSE DE NACIMIENTO: /start.sh escribe /etc/.z-ai-config base {baseUrl, apiKey:"Z.ai" literal}; el runtime del workspace (main.py en /app, puerto 12600) INYECTA después la identidad de sesión: chatId=chat-bf973aea-... (ESTA conversación, coincide con el chat_id del gateway IM), userId=087a39f4-... y token JWT HS256 payload {user_id, chat_id, platform:"zai"}. El SDK z-ai-web-dev-sdk v0.0.18 (bun global) envía en cada llamada: Authorization Bearer + X-Z-AI-From:Z + X-Chat-Id + X-User-Id + X-Token, y fuerza thinking:{type:'disabled'} por defecto (acepta enabled).
+- CAMBIO DE POLÍTICA DEL GATEWAY detectado en vivo: llamadas SIN X-Token → 401 {"error":"missing X-Token header"} (ayer aún funcionaban con Bearer solo). El bridge v2 (arrancado 01:18, token inyectado 02:57) quedó funcionalmente muerto: caché estática de cabeceras = causa raíz.
+- EXPERIMENTO DECISIVO (scripts/session-mechanism-experiment.mjs, resultados en scripts/session-mechanism-results.json): (A) sin sesión → 401; (B) con sesión → 429 PERO con buckets user-level visibles y nuevos: user-daily 200/día, user-10min 30; (D) JWT como Bearer → 401 (solo vale vía X-Token, como el SDK); (C/E) thinking y cutoff inconclusos por 429 (bucket key-daily en 0 bloquea TODO, incluso llamadas con sesión; cada 429 descuenta 1 del bucket user).
+- Hallazgo adicional: el config fue re-escrito por la plataforma a las 03:09:56 (2ª inyección en 12 min) → la recarga dinámica de credenciales es OBLIGATORIA, no optativa.
+- BRIDGE V3 (session-born) implementado: (1) zai-config.mjs: createConfigProvider() con recarga por mtime + tokenFingerprint() (nunca loguea el token completo); (2) bridge.mjs: cabeceras reconstruidas por petición/reintento, log de "credenciales RECARGADAS", thinking por-request (anthropicBody.thinking.type==='enabled' honrado; GLM_THICKING env como default), logging de buckets de cuota en 429 y /health con sesión (chatId, huella token, mtime) y quota_last_seen; (3) translate.mjs: reasoning_content → bloque thinking Anthropic (posición correcta thinking→text→tool_use) en respuesta completa Y en StreamTranslator (thinking_delta + signature_delta al cerrar); (4) fail-fast en 429 con daily=0 (los reintentos a ciegas quemaban 4 extra de cuota user por petición).
+- TESTS: suite ampliada 26 → 37 (mapeo thinking completo: bloque primero, sin-duplicación de firma en finalize, stats.reasoningChars, compatibilidad sin reasoning). 37/37 OK. node --check en los 4 ficheros OK.
+- VERIFICACIÓN DE CABLEADO en vivo: bridge v3 reiniciado (PID 8457); llamada local → 429 con "fail-fast, sin reintentos" y buckets key=0 user=190 (identidad ACEPTADA; solo bloquea el key-daily agotado hoy). El 401 desapareció. /health expone chatId/token/userId/mtime correctamente.
+- Cuota actual: key-daily 0/300 (bloquea), user-daily 190/200 restantes, user-10min 25/30. Reset daily asumido a medianoche UTC+8 (16:00 UTC; hipótesis por convención Zhipu, sin verificar).
+- DOCS: README.md + README.es.md con sección "v3 — session-born credentials" (mecanismo de nacimiento, cambio de política del gateway, fail-fast, thinking); glm-claude: comentario de thinking actualizado.
+
+Stage Summary:
+- RESPUESTA A "¿DE DÓNDE NACES?": no del SDK ni de una API key secreta — nace de /etc/.z-ai-config: baseUrl internal-api.z.ai + apiKey literal "Z.ai" + JWT de sesión (X-Token) + chatId de ESTA conversación, inyectados por el runtime de la plataforma y OBLIGATORIOS desde hoy para el gateway. El bridge v3 usa EXACTAMENTE ese mecanismo con recarga automática.
+- El modelo servido por el gateway sigue sin ser seleccionable por nombre (eco cosmético glm-4-plus; ver worklog 1-c), pero el MECHANISM es el mismo de la sesión: mismo gateway, misma identidad, mismo bucket user. "Correr con el modelo de la sesión (glm-5.3-flash)" = etiqueta configurada + mecanismo idéntico; la selección real de modelo sigue siendo decisión server-side de Z.ai.
+- Pendiente cuando la cuota resetee: (1) verificar thinking:{type:'enabled'} → reasoning_content bajo el mecanismo de sesión (el test C quedó inconcluso por 429); (2) test E2E agéntico con subagentes de CC vía glm-claude (el usuario pidió explícitamente workflows/agentes/subagentes nativos); (3) glm-bridge probe para re-fingerprint con identidad de sesión.

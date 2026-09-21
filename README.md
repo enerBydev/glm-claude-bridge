@@ -135,6 +135,43 @@ it "you are Claude" and the underlying model parrots that. Run
 `glm-bridge probe` any time to see what the gateway declares and a live
 behavioral reading.
 
+## v3 — session-born credentials (the 2026-09-21 discovery)
+
+Deep sandbox forensics (`/start.sh`, the workspace runtime, the Z.ai SDK
+source) found where the agent's tool calls are really born:
+
+- `/start.sh` writes a base `{"baseUrl": "...", "apiKey": "Z.ai"}` to
+  `/etc/.z-ai-config` — **`Z.ai` is a literal, not a secret**; auth is the
+  container's network identity.
+- The workspace runtime then injects the **session identity** into the same
+  file: `chatId` (this conversation's id), `userId` and a **JWT `token`**
+  (HS256, payload `{user_id, chat_id, platform: "zai"}`).
+- The official SDK sends that identity on every call: `X-Chat-Id`,
+  `X-User-Id`, `X-Token` (plus `Authorization: Bearer Z.ai`, `X-Z-AI-From: Z`).
+- **The gateway now enforces it**: requests without `X-Token` get
+  `401 {"error":"missing X-Token header"}`. The session identity also opens a
+  **separate user-level quota bucket** (200/day, 30/10 min) beside the
+  key-level one (300/day).
+
+Therefore bridge **v3**:
+
+1. **Credentials are reloaded by `mtime`** — when the platform re-injects the
+   token (every new conversation / continuation), the bridge picks it up on
+   the next request instead of going stale (the root cause of mysterious 401s
+   in v2 after a session refresh).
+2. **`429` fail-fast** when a daily bucket is at 0 — blind retries only burn
+   the user-level bucket (each 429 decrements it).
+3. **Thinking support**: honors `thinking: {type:'enabled'}` from Claude Code
+   (or `GLM_THINKING=1`), maps upstream `reasoning_content` to Anthropic
+   `thinking` blocks (with `thinking_delta` / `signature_delta` in streams),
+   in the right position (thinking → text → tool_use).
+4. **/health exposes the session binding** (chatId, token fingerprint,
+   config mtime) and the last-seen quota buckets.
+
+`glm-claude` still targets the bridge transparently; nothing to configure —
+the bridge is literally born from the same `/etc/.z-ai-config` mechanism the
+host session uses.
+
 ## Hard-won implementation notes
 
 1. **`X-Z-AI-From: Z` is mandatory** on this gateway; requests without it get

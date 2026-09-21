@@ -1,0 +1,101 @@
+[
+  {
+    "label": "A) baseline (sin sesión)",
+    "mode": "baseline",
+    "status": 401,
+    "ms": 66,
+    "echo_model": null,
+    "content": "{\"error\":\"missing X-Token header\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {}
+  },
+  {
+    "label": "B) sesión full (mecanismo SDK)",
+    "mode": "session",
+    "status": 429,
+    "ms": 42,
+    "echo_model": null,
+    "content": "{\"error\":\"Too many requests, please try again later\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {
+      "x-ratelimit-limit-daily": "300",
+      "x-ratelimit-limit-qps": "2",
+      "x-ratelimit-remaining-daily": "0",
+      "x-ratelimit-remaining-qps": "1",
+      "x-ratelimit-reset": "1789959816",
+      "x-ratelimit-user-10min-limit": "30",
+      "x-ratelimit-user-10min-remaining": "29",
+      "x-ratelimit-user-daily-remaining": "199"
+    }
+  },
+  {
+    "label": "C) sesión + thinking ENABLED",
+    "mode": "session-think",
+    "status": 429,
+    "ms": 26,
+    "echo_model": null,
+    "content": "{\"error\":\"Too many requests, please try again later\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {
+      "x-ratelimit-limit-daily": "300",
+      "x-ratelimit-limit-qps": "2",
+      "x-ratelimit-remaining-daily": "0",
+      "x-ratelimit-remaining-qps": "1",
+      "x-ratelimit-reset": "1789959822",
+      "x-ratelimit-user-10min-limit": "30",
+      "x-ratelimit-user-10min-remaining": "28",
+      "x-ratelimit-user-daily-remaining": "198"
+    }
+  },
+  {
+    "label": "D) Bearer=JWT (exploratorio)",
+    "mode": "bearer-jwt",
+    "status": 401,
+    "ms": 30,
+    "echo_model": null,
+    "content": "{\"error\":\"missing X-Token header\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {}
+  },
+  {
+    "label": "E1) cutoff SIN sesión",
+    "mode": "baseline",
+    "status": 401,
+    "ms": 32,
+    "echo_model": null,
+    "content": "{\"error\":\"missing X-Token header\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {}
+  },
+  {
+    "label": "E2) cutoff CON sesión",
+    "mode": "session",
+    "status": 429,
+    "ms": 29,
+    "echo_model": null,
+    "content": "{\"error\":\"Too many requests, please try again later\"}",
+    "reasoning_present": false,
+    "reasoning_preview": "",
+    "usage": null,
+    "quota": {
+      "x-ratelimit-limit-daily": "300",
+      "x-ratelimit-limit-qps": "2",
+      "x-ratelimit-remaining-daily": "0",
+      "x-ratelimit-remaining-qps": "1",
+      "x-ratelimit-reset": "1789959837",
+      "x-ratelimit-user-10min-limit": "30",
+      "x-ratelimit-user-10min-remaining": "27",
+      "x-ratelimit-user-daily-remaining": "197"
+    }
+  }
+]

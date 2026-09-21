@@ -59,7 +59,9 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_SMALL_FAST_MODEL="$ANTHROPIC_MODEL"
 
-# thinking nativo del bridge deshabilitado; CC tampoco lo pedirá
+# thinking: el bridge v3 honra thinking:{type:'enabled'} si CC lo pide y
+# traduce reasoning_content del upstream a bloques thinking de Anthropic.
+# MAX_THINKING_TOKENS>0 hace que CC lo pida (pruébalo cuando haya cuota):
 export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-0}"
 
 # ventana de contexto: GLM en esta pasarela ~128k; evita el "unrecognized model"

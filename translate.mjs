@@ -280,18 +280,24 @@ export function anthropicFromComplete(up, requestedModel, offeredNames) {
   const content = [];
   let text = typeof m.content === 'string' ? m.content : '';
   const offered = offeredNames instanceof Set ? offeredNames : new Set(offeredNames || []);
+  const toolBlocks = [];
 
   for (const tc of Array.isArray(m.tool_calls) ? m.tool_calls : []) {
     const name = resolveToolName(tc?.function?.name, offered);
     let input = {};
     try { input = JSON.parse(tc?.function?.arguments || '{}'); } catch { input = { _raw: tc?.function?.arguments }; }
     if (name) {
-      content.push({ type: 'tool_use', id: tc.id || randId('toolu'), name, input });
+      toolBlocks.push({ type: 'tool_use', id: tc.id || randId('toolu'), name, input });
     } else {
       text += `\n[glm-bridge] El modelo intentó invocar una herramienta desconocida "${tc?.function?.name}" con: ${JSON.stringify(input).slice(0, 500)}. Usa exactamente los nombres de herramienta disponibles.`;
     }
   }
-  if (text) content.unshift({ type: 'text', text });
+  // Orden Anthropic: thinking → text → tool_use. El reasoning del upstream
+  // (GLM thinking híbrido) llega como message.reasoning_content.
+  const reasoning = typeof m.reasoning_content === 'string' ? m.reasoning_content : '';
+  if (reasoning) content.push({ type: 'thinking', thinking: reasoning, signature: '' });
+  if (text) content.push({ type: 'text', text });
+  content.push(...toolBlocks);
 
   return {
     id: up.id ? 'msg_' + up.id : randId('msg'),
@@ -323,6 +329,7 @@ export class StreamTranslator {
     this.current = null; // { index, type:'text'|'tool_use' }
     this.toolBlocks = new Map(); // upstream tool index -> estado
     this.outputText = '';
+    this.outputReasoning = '';
     this.finishReason = null;
     this.usage = null;
     this.sawToolCall = false;
@@ -352,9 +359,19 @@ export class StreamTranslator {
 
   #closeCurrent() {
     if (!this.current) return [];
-    const ev = this.#emit('content_block_stop', { type: 'content_block_stop', index: this.current.index });
+    const evs = [];
+    // los bloques thinking se cierran con una firma (vía streaming); aquí va
+    // vacía: CC no la valida, y el upstream GLM no produce firmas Anthropic.
+    if (this.current.type === 'thinking') {
+      evs.push(this.#emit('content_block_delta', {
+        type: 'content_block_delta',
+        index: this.current.index,
+        delta: { type: 'signature_delta', signature: '' },
+      }));
+    }
+    evs.push(this.#emit('content_block_stop', { type: 'content_block_stop', index: this.current.index }));
     this.current = null;
-    return [ev];
+    return evs;
   }
 
   #openText() {
@@ -364,6 +381,17 @@ export class StreamTranslator {
         type: 'content_block_start',
         index: this.current.index,
         content_block: { type: 'text', text: '' },
+      }),
+    ];
+  }
+
+  #openThinking() {
+    this.current = { index: this.nextIndex++, type: 'thinking' };
+    return [
+      this.#emit('content_block_start', {
+        type: 'content_block_start',
+        index: this.current.index,
+        content_block: { type: 'thinking', thinking: '' },
       }),
     ];
   }
@@ -394,7 +422,21 @@ export class StreamTranslator {
     if (choice.finish_reason) this.finishReason = choice.finish_reason;
     const delta = choice.delta || {};
 
-    // delta.reasoning_content se ignora por diseño (thinking deshabilitado upstream)
+    // delta.reasoning_content → bloque thinking (sólo presente con thinking
+    // enabled en el upstream GLM; con disabled no aparece, coste cero).
+    const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+    if (reasoning) {
+      if (!this.current || this.current.type !== 'thinking') {
+        out.push(...this.#closeCurrent());
+        out.push(...this.#openThinking());
+      }
+      this.outputReasoning += reasoning;
+      out.push(this.#emit('content_block_delta', {
+        type: 'content_block_delta',
+        index: this.current.index,
+        delta: { type: 'thinking_delta', thinking: reasoning },
+      }));
+    }
 
     const txt = typeof delta.content === 'string' ? delta.content : '';
     if (txt) {
@@ -482,6 +524,7 @@ export class StreamTranslator {
       inputTokens: this.usage?.prompt_tokens ?? this.inputEstimate,
       outputTokens: this.usage?.completion_tokens ?? estimateTokens(this.outputText),
       chars: this.outputText.length,
+      reasoningChars: this.outputReasoning.length,
       tools: this.toolBlocks.size,
     };
   }

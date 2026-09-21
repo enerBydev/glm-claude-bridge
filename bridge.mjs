@@ -1,19 +1,27 @@
 #!/usr/bin/env node
 // ============================================================================
-// bridge.mjs — GLM-Bridge
+// bridge.mjs — GLM-Bridge v3 (session-born)
 // Servidor local que expone la API de Messages de Anthropic y la traduce a
-// GLM (endpoint OpenAI-compat) usando las credenciales Z.ai del agente.
-// Escrito desde cero para este proyecto. Sin dependencias externas.
+// GLM (endpoint OpenAI-compat) usando EL MISMO MECANISMO DE NACIMIENTO de la
+// sesión: /etc/.z-ai-config con el JWT de sesión (X-Token) + identidad del
+// chat (X-Chat-Id/X-User-Id) que el runtime de la plataforma inyecta.
+// Sin dependencias externas.
 //
 //   Claude Code  ──HTTP/SSE──▶  GLM-Bridge  ──HTTP/SSE──▶  internal-api.z.ai
 //   (oficial)     /v1/messages   este proceso            /chat/completions
+//                                            (X-Token JWT de ESTA sesión)
+//
+// v3: credenciales con recarga automática por mtime (la plataforma re-inyecta
+// el token en cada continuación de conversación; sin X-Token el gateway
+// responde 401), thinking bajo demanda (request de CC o GLM_THINKING),
+// reasoning_content → bloques thinking Anthropic, y logging de cuota.
 // ============================================================================
 
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadZaiConfig, upstreamHeaders, upstreamUrl, upstreamVisionUrl } from './zai-config.mjs';
+import { loadZaiConfig, createConfigProvider, tokenFingerprint, upstreamHeaders, upstreamUrl, upstreamVisionUrl } from './zai-config.mjs';
 import {
   buildUpstreamRequest,
   anthropicFromComplete,
@@ -42,10 +50,20 @@ let lastUpstreamStart = 0;
 // Cookie jar anti-WAF: el WAF (Alibaba) emite acw_tc y penaliza con blackhole
 // de 300s a los clientes que no lo reenvían (cada request parece "nuevo").
 const cookieJar = new Map();
+// v3: proveedor de credenciales con recarga automática (mtime). La plataforma
+// re-inyecta el JWT de sesión en /etc/.z-ai-config; una copia estática muere
+// en cuanto el token rota (causa raíz del 401 "missing X-Token header").
+const getConfig = createConfigProvider();
 function headersWithCookies() {
-  if (!cookieJar.size) return HEADERS;
+  const cfg = getConfig();
+  if (cfg._reloaded) {
+    cfg._reloaded = false;
+    log(`sesión: credenciales RECARGADAS (token ${tokenFingerprint(cfg.token)}, chatId=${cfg.chatId || 'sin'})`);
+  }
+  const base = upstreamHeaders(cfg);
+  if (!cookieJar.size) return base;
   const cookie = [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
-  return { ...HEADERS, Cookie: cookie };
+  return { ...base, Cookie: cookie };
 }
 function absorbCookies(res) {
   try {
@@ -58,13 +76,14 @@ function absorbCookies(res) {
 }
 const LOG_DIR = path.join(__dirname, 'logs');
 
-const cfg = loadZaiConfig();
-const UPSTREAM = upstreamUrl(cfg);
-const UPSTREAM_VISION = upstreamVisionUrl(cfg);
-const HEADERS = upstreamHeaders(cfg);
+const cfg0 = getConfig();
+const UPSTREAM = upstreamUrl(cfg0);
+const UPSTREAM_VISION = upstreamVisionUrl(cfg0);
 
 // último "model" que el gateway declaró servir en su eco (puede ser cosmético)
 let lastEchoModel = null;
+// última cuota observada (buckets key-level y user-level)
+let lastQuota = null;
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, `bridge-${new Date().toISOString().slice(0, 10)}.log`);
@@ -136,6 +155,16 @@ async function fetchUpstream(bodyObj, reqLog, targetUrl = UPSTREAM) {
       });
       absorbCookies(res);
       if (!res.ok && RETRYABLE.has(res.status) && attempt < MAX_RETRIES) {
+        // FAIL-FAST en agotamiento diario: si algún bucket daily está a 0,
+        // reintentar sólo quema cuota user (cada 429 la descuenta).
+        if (res.status === 429) {
+          const q = quotaOf(res);
+          if (q.keyDailyRemaining === 0 || q.userDailyRemaining === 0) {
+            reqLog(`429 con daily agotado (key=${q.keyDailyRemaining} user=${q.userDailyRemaining}): fail-fast, sin reintentos`);
+            lastErr = { kind: 'http', status: 429, txt: 'daily agotado' };
+            break;
+          }
+        }
         const txt = await res.text().catch(() => '');
         lastErr = { kind: 'http', status: res.status, txt };
         continue;
@@ -204,13 +233,18 @@ async function handleMessages(req, res) {
       .map((t) => t?.name).filter(Boolean)
   );
 
+  // thinking: default del entorno (GLM_THINKING) con override por petición —
+  // si CC pide thinking:{type:'enabled'} se honra nativamente.
+  const requestThinking = anthropicBody.thinking?.type === 'enabled';
+  const effectiveThinking = THINKING || requestThinking;
+
   // ojo: en Node 24 los chunks de fetch.body son Uint8Array (no Buffer):
   // .toString() daría los códigos de byte unidos por comas. Usar TextDecoder.
   const decoder = new TextDecoder('utf-8');
 
   const upstreamBody = buildUpstreamRequest(anthropicBody, {
     model: upstreamModel,
-    thinking: THINKING,
+    thinking: effectiveThinking,
     toolHint: TOOL_HINT,
   });
   // ANTI-WAF: el gateway/WAF deja en cola y vacía a los 300s las peticiones
@@ -231,7 +265,7 @@ async function handleMessages(req, res) {
   const shortId = Math.random().toString(36).slice(2, 8);
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
   if (hasImages) reqLog(`routing: petición con imágenes -> ${targetUrl}`);
-  reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
+  reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | thinking=${effectiveThinking ? 'on' : 'off'}${requestThinking && !THINKING ? '(req)' : ''} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
 
   // throttle anti-WAF: separar inicios de peticiones upstream
   if (MIN_INTERVAL_MS > 0) {
@@ -256,6 +290,10 @@ async function handleMessages(req, res) {
   if (!upRes.ok) {
     const txt = await upRes.text().catch(() => '');
     reqLog(`upstream ${upRes.status}: ${txt.slice(0, 300)}`);
+    if (upRes.status === 429) {
+      const q = quotaOf(upRes);
+      reqLog(`429 buckets: key_daily=${q.keyDailyRemaining} user_10min=${q.user10minRemaining}/${q.user10minLimit} user_daily=${q.userDailyRemaining}`);
+    }
     const mapped = mapUpstreamStatus(upRes.status);
     return anthropicError(res, mapped.status, mapped.type, `upstream GLM ${upRes.status}: ${txt.slice(0, 300)}`);
   }
@@ -264,11 +302,13 @@ async function handleMessages(req, res) {
   try { upJson = JSON.parse(await upRes.text()); }
   catch (e) { return anthropicError(res, 502, 'api_error', 'respuesta upstream no-JSON: ' + e.message); }
   if (upJson.model) { lastEchoModel = upJson.model; reqLog(`eco gateway model=${upJson.model}`); }
+  lastQuota = quotaOf(upRes);
   const final = anthropicFromComplete(upJson, requestedModel, offeredNames);
+  const reasoningLen = final.content.filter((b) => b.type === 'thinking').reduce((a, b) => a + (b.thinking || '').length, 0);
 
   // ---------- No streaming ----------
   if (!anthropicBody.stream) {
-    return sendJson(res, 200, final, reqLog, t0, { stats: { inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens, tools: final.content.filter(b => b.type === 'tool_use').length } });
+    return sendJson(res, 200, final, reqLog, t0, { stats: { inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens, tools: final.content.filter(b => b.type === 'tool_use').length, reasoning: reasoningLen } });
   }
 
   // ---------- Streaming sintético (SSE Anthropic desde respuesta completa) ----------
@@ -296,6 +336,11 @@ async function handleMessages(req, res) {
       writeEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } } });
       writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: block.text } } });
       writeEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: idx } });
+    } else if (block.type === 'thinking') {
+      writeEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: idx, content_block: { type: 'thinking', thinking: '' } } });
+      writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'thinking_delta', thinking: block.thinking } } });
+      writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'signature_delta', signature: block.signature || '' } } });
+      writeEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: idx } });
     } else if (block.type === 'tool_use') {
       writeEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} } } });
       writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } } });
@@ -309,8 +354,21 @@ async function handleMessages(req, res) {
   } });
   writeEvent({ event: 'message_stop', data: { type: 'message_stop' } });
   try { res.end(); } catch {}
-  log(`req ${shortId} | OK synth-stream | ${Date.now() - t0}ms | in=${final.usage.input_tokens} out=${final.usage.output_tokens} tools=${final.content.filter(b => b.type === 'tool_use').length} chars=${final.content.filter(b => b.type === 'text').reduce((a, b) => a + (b.text || '').length, 0)}`);
+  log(`req ${shortId} | OK synth-stream | ${Date.now() - t0}ms | in=${final.usage.input_tokens} out=${final.usage.output_tokens} tools=${final.content.filter(b => b.type === 'tool_use').length} reasoning=${reasoningLen} chars=${final.content.filter(b => b.type === 'text').reduce((a, b) => a + (b.text || '').length, 0)}`);
 }
+
+/** Extrae los contadores de cuota de una respuesta upstream. */
+function quotaOf(res) {
+  const g = (n) => res.headers.get(n);
+  return {
+    keyDailyRemaining: numOrNull(g('x-ratelimit-remaining-daily')),
+    keyDailyLimit: numOrNull(g('x-ratelimit-limit-daily')),
+    user10minRemaining: numOrNull(g('x-ratelimit-user-10min-remaining')),
+    user10minLimit: numOrNull(g('x-ratelimit-user-10min-limit')),
+    userDailyRemaining: numOrNull(g('x-ratelimit-user-daily-remaining')),
+  };
+}
+function numOrNull(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 function estimateInput(anthropicBody) {
   let text = typeof anthropicBody.system === 'string' ? anthropicBody.system : JSON.stringify(anthropicBody.system || '');
@@ -376,7 +434,21 @@ const server = http.createServer(async (req, res) => {
   const url = (req.url || '').split('?')[0];
   try {
     if (req.method === 'GET' && (url === '/health' || url === '/')) {
-      const body = JSON.stringify({ status: 'ok', bridge: 'glm-bridge', model: DEFAULT_MODEL, gateway_echo_model: lastEchoModel, upstream: UPSTREAM, pid: process.pid });
+      const c = getConfig();
+      const body = JSON.stringify({
+        status: 'ok', bridge: 'glm-bridge', version: 3,
+        model: DEFAULT_MODEL,
+        gateway_echo_model: lastEchoModel,
+        upstream: UPSTREAM,
+        session: {
+          chatId: c.chatId || null,
+          token: tokenFingerprint(c.token),
+          userId: c.userId || null,
+          config_mtime: c._mtime ? new Date(c._mtime).toISOString() : null,
+        },
+        quota_last_seen: lastQuota,
+        pid: process.pid,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(body);
     }
@@ -400,8 +472,10 @@ server.headersTimeout = 60000;
 server.keepAliveTimeout = 75000;
 
 server.listen(PORT, HOST, () => {
-  log(`GLM-Bridge escuchando en http://${HOST}:${PORT} | modelo=${DEFAULT_MODEL} | upstream=${UPSTREAM}`);
-  log(`creds: ${cfg._source} | thinking=${THINKING ? 'on' : 'off'} | toolHint=${TOOL_HINT ? 'on' : 'off'} | retries=${MAX_RETRIES}`);
+  const c = getConfig();
+  log(`GLM-Bridge v3 (session-born) escuchando en http://${HOST}:${PORT} | modelo=${DEFAULT_MODEL} | upstream=${UPSTREAM}`);
+  log(`creds: ${c._source} | sesión: chatId=${c.chatId || 'sin'} | token=${tokenFingerprint(c.token)} | userId=${c.userId || 'sin'}`);
+  log(`thinking=${THINKING ? 'on' : 'off'} (override por petición activo) | toolHint=${TOOL_HINT ? 'on' : 'off'} | retries=${MAX_RETRIES}`);
 });
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

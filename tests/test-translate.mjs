@@ -72,5 +72,30 @@ ok(anth.content[0].type === 'text' && anth.content[0].text.includes('desconocida
 ok(estimateTokens('hola mundo') === 3, 'estimate latin: ' + estimateTokens('hola mundo'));
 ok(estimateTokens('你好世界') === 4, 'estimate cjk: ' + estimateTokens('你好世界'));
 
+// 6. v3: reasoning_content → bloque thinking (respuesta completa)
+const upThink = { id: 't1', choices: [{ finish_reason: 'stop', message: { reasoning_content: 'Pienso: 2+2=4.', content: 'La respuesta es 4.', tool_calls: [] } }], usage: { prompt_tokens: 8, completion_tokens: 12 } };
+const anthThink = anthropicFromComplete(upThink, 'glm-5.3-flash', []);
+ok(anthThink.content[0].type === 'thinking' && anthThink.content[0].thinking === 'Pienso: 2+2=4.', 'reasoning → thinking block primero');
+ok(anthThink.content[1].type === 'text' && anthThink.content[1].text === 'La respuesta es 4.', 'texto tras thinking');
+ok(anthThink.content[0].signature === '', 'thinking sin firma (placeholder)');
+
+// 7. v3: sin reasoning → sin bloque thinking (compatibilidad)
+const anthNoThink = anthropicFromComplete({ choices: [{ finish_reason: 'stop', message: { content: 'x' } }] }, 'glm-5.3-flash', []);
+ok(!anthNoThink.content.some(b => b.type === 'thinking'), 'sin reasoning → sin thinking block');
+
+// 8. v3: thinking en streaming (StreamTranslator)
+const trThink = new StreamTranslator({ requestedModel: 'glm-5.3-flash' });
+const evT1 = trThink.handleChunk({ choices: [{ delta: { reasoning_content: 'paso 1: ' } }] });
+ok(evT1.some(e => e.data?.content_block?.type === 'thinking'), 'content_block_start thinking');
+ok(evT1.some(e => e.data?.delta?.type === 'thinking_delta' && e.data.delta.thinking === 'paso 1: '), 'thinking_delta emitido');
+const evT2 = trThink.handleChunk({ choices: [{ delta: { reasoning_content: 'paso 2' } }] });
+ok(evT2.some(e => e.data?.delta?.type === 'thinking_delta'), 'thinking_delta continúa sin reabrir bloque');
+const evT3 = trThink.handleChunk({ choices: [{ delta: { content: 'respuesta' } }] });
+ok(evT3.some(e => e.data?.content_block?.type === 'text'), 'bloque texto abierto tras thinking');
+ok(evT3.some(e => e.data?.delta?.type === 'signature_delta'), 'signature_delta al cerrar thinking (al abrir texto)');
+const evT4 = trThink.finalize();
+ok(!evT4.some(e => e.data?.delta?.type === 'signature_delta'), 'finalize no duplica signature_delta');
+ok(trThink.stats.reasoningChars === ('paso 1: ' + 'paso 2').length, 'stats.reasoningChars: ' + trThink.stats.reasoningChars);
+
 console.log(`\n${pass} pasadas, ${fail} fallos`);
 process.exit(fail ? 1 : 0);
