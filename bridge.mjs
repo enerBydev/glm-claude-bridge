@@ -17,7 +17,6 @@ import { loadZaiConfig, upstreamHeaders, upstreamUrl, upstreamVisionUrl } from '
 import {
   buildUpstreamRequest,
   anthropicFromComplete,
-  StreamTranslator,
   estimateTokens,
 } from './translate.mjs';
 
@@ -34,7 +33,29 @@ const TOOL_HINT = process.env.GLM_BRIDGE_TOOL_HINT !== '0';
 const MAX_RETRIES = Number(process.env.GLM_BRIDGE_RETRIES || 4);
 const RETRY_BASE_MS = Number(process.env.GLM_BRIDGE_RETRY_BASE_MS || 900);
 const BRIDGE_TOKEN = process.env.GLM_BRIDGE_TOKEN || ''; // opcional
-const IDLE_TIMEOUT_MS = Number(process.env.GLM_BRIDGE_IDLE_MS || 300000);
+const IDLE_TIMEOUT_MS = Number(process.env.GLM_BRIDGE_IDLE_MS || 60000);
+// El WAF del gateway hace blackhole silencioso ante ráfagas (herramientas
+// locales instantáneas => peticiones separadas por <30ms). Espacio mínimo
+// entre INICIOS de peticiones upstream.
+const MIN_INTERVAL_MS = Number(process.env.GLM_BRIDGE_MIN_INTERVAL_MS || 3000);
+let lastUpstreamStart = 0;
+// Cookie jar anti-WAF: el WAF (Alibaba) emite acw_tc y penaliza con blackhole
+// de 300s a los clientes que no lo reenvían (cada request parece "nuevo").
+const cookieJar = new Map();
+function headersWithCookies() {
+  if (!cookieJar.size) return HEADERS;
+  const cookie = [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  return { ...HEADERS, Cookie: cookie };
+}
+function absorbCookies(res) {
+  try {
+    for (const sc of res.headers.getSetCookie()) {
+      const [pair] = sc.split(';');
+      const eq = pair.indexOf('=');
+      if (eq > 0) cookieJar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  } catch { /* getSetCookie no disponible */ }
+}
 const LOG_DIR = path.join(__dirname, 'logs');
 
 const cfg = loadZaiConfig();
@@ -110,9 +131,10 @@ async function fetchUpstream(bodyObj, reqLog, targetUrl = UPSTREAM) {
     try {
       const res = await fetch(targetUrl, {
         method: 'POST',
-        headers: HEADERS,
+        headers: headersWithCookies(),
         body: JSON.stringify(bodyObj),
       });
+      absorbCookies(res);
       if (!res.ok && RETRYABLE.has(res.status) && attempt < MAX_RETRIES) {
         const txt = await res.text().catch(() => '');
         lastErr = { kind: 'http', status: res.status, txt };
@@ -191,6 +213,14 @@ async function handleMessages(req, res) {
     thinking: THINKING,
     toolHint: TOOL_HINT,
   });
+  // ANTI-WAF: el gateway/WAF deja en cola y vacía a los 300s las peticiones
+  // SSE (stream:true) bajo carga; las stream:false pasan siempre. Pedimos
+  // SIEMPRE no-stream y sintetizamos los eventos Anthropic localmente.
+  if (process.env.GLM_BRIDGE_UPSTREAM_STREAM !== '1') upstreamBody.stream = false;
+  // Algunos backends GLM rechazan/encolan max_tokens grandes (32768 de CC);
+  // cap configurable (GLM_BRIDGE_MAX_OUT) — CC lo usa como tope, no como meta.
+  const MAX_OUT = Number(process.env.GLM_BRIDGE_MAX_OUT || 0);
+  if (MAX_OUT > 0) upstreamBody.max_tokens = Math.min(upstreamBody.max_tokens, MAX_OUT);
 
   // routing de visión: el gateway sólo acepta imágenes en /chat/completions/vision
   const hasImages = (anthropicBody.messages || []).some(
@@ -202,6 +232,17 @@ async function handleMessages(req, res) {
   const reqLog = (m) => log(`req ${shortId} | ${m}`);
   if (hasImages) reqLog(`routing: petición con imágenes -> ${targetUrl}`);
   reqLog(`${req.method} ${req.url} | modelo_up=${upstreamModel} | stream=${!!anthropicBody.stream} | msgs=${anthropicBody.messages?.length || 0} | tools=${offeredNames.size}`);
+
+  // throttle anti-WAF: separar inicios de peticiones upstream
+  if (MIN_INTERVAL_MS > 0) {
+    const now = Date.now();
+    const wait = lastUpstreamStart + MIN_INTERVAL_MS - now;
+    if (wait > 0) {
+      reqLog(`throttle: esperando ${wait}ms (intervalo mínimo ${MIN_INTERVAL_MS}ms)`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    lastUpstreamStart = Date.now();
+  }
 
   let upRes;
   try {
@@ -219,122 +260,56 @@ async function handleMessages(req, res) {
     return anthropicError(res, mapped.status, mapped.type, `upstream GLM ${upRes.status}: ${txt.slice(0, 300)}`);
   }
 
+  let upJson;
+  try { upJson = JSON.parse(await upRes.text()); }
+  catch (e) { return anthropicError(res, 502, 'api_error', 'respuesta upstream no-JSON: ' + e.message); }
+  if (upJson.model) { lastEchoModel = upJson.model; reqLog(`eco gateway model=${upJson.model}`); }
+  const final = anthropicFromComplete(upJson, requestedModel, offeredNames);
+
   // ---------- No streaming ----------
   if (!anthropicBody.stream) {
-    const ct = upRes.headers.get('content-type') || '';
-    if (ct.includes('event-stream')) {
-      // upstream decidió hacer streaming aunque no se pidió: acumular y fusionar
-      const tr = new StreamTranslator({
-        requestedModel, offeredNames,
-        inputTokensEstimate: estimateInput(anthropicBody),
-      });
-      let sseBuf = '';
-      const parser = sseLineParser((payload) => {
-        if (payload === '[DONE]') return;
-        try {
-          const obj = JSON.parse(payload);
-          if (obj.model && !lastEchoModel) { lastEchoModel = obj.model; reqLog(`eco gateway model=${obj.model}`); }
-          for (const ev of tr.handleChunk(obj)) {}
-        } catch {}
-      });
-      for await (const chunk of upRes.body) {
-        sseBuf = decoder.decode(chunk, { stream: true });
-        parser(sseBuf);
-      }
-      const final = anthropicFromCompleteFromStream(tr, requestedModel);
-      return sendJson(res, 200, final, reqLog, t0, tr);
-    }
-    let upJson;
-    try { upJson = JSON.parse(await upRes.text()); }
-    catch (e) { return anthropicError(res, 502, 'api_error', 'respuesta upstream no-JSON: ' + e.message); }
-    if (upJson.model) { lastEchoModel = upJson.model; reqLog(`eco gateway model=${upJson.model}`); }
-    const final = anthropicFromComplete(upJson, requestedModel, offeredNames);
     return sendJson(res, 200, final, reqLog, t0, { stats: { inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens, tools: final.content.filter(b => b.type === 'tool_use').length } });
   }
 
-  // ---------- Streaming ----------
-  const ct = upRes.headers.get('content-type') || '';
-  if (!ct.includes('event-stream') && !ct.includes('text/plain')) {
-    // error diferido que llegó como JSON con 200
-    let msg = 'upstream no devolvió event-stream';
-    try { const j = JSON.parse(await upRes.text()); msg = j?.error?.message || JSON.stringify(j).slice(0, 300); } catch {}
-    reqLog('upstream 200 sin SSE: ' + msg);
-    return anthropicError(res, 502, 'api_error', msg);
-  }
-
+  // ---------- Streaming sintético (SSE Anthropic desde respuesta completa) ----------
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-
-  const tr = new StreamTranslator({
-    requestedModel,
-    offeredNames,
-    inputTokensEstimate: estimateInput(anthropicBody),
-  });
-
   const writeEvent = ({ event, data }) => {
     if (res.writableEnded) return;
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-
-  let clientGone = false;
-  // ojo: 'close' de `req` dispara al terminar de LEER el body (no indica
-  // desconexión); la señal fiable es 'close' de `res` sin writableEnded.
-  res.on('close', () => { if (!res.writableEnded) clientGone = true; });
-
-  // watchdog de inactividad
-  let idleTimer = setTimeout(() => {
-    reqLog('watchdog: sin datos del upstream ' + IDLE_TIMEOUT_MS + 'ms, abortando');
-    try { upRes.body?.destroy(new Error('idle timeout')); } catch {}
-  }, IDLE_TIMEOUT_MS);
-  const kick = () => { idleTimer.refresh(); };
-
-  // message_start + ping
-  for (const ev of tr.start()) writeEvent(ev);
-
-  let sseFailures = 0;
-  const DEBUG = process.env.GLM_BRIDGE_DEBUG === '1';
-  let nChunks = 0, nPayloads = 0;
-  const onData = (payload) => {
-    if (DEBUG) nPayloads++;
-    if (clientGone) return;
-    if (payload === '[DONE]') return;
-    let obj;
-    try { obj = JSON.parse(payload); } catch { return; }
-    if (obj.model && !lastEchoModel) { lastEchoModel = obj.model; reqLog(`eco gateway model=${obj.model}`); }
-    try {
-      for (const ev of tr.handleChunk(obj)) writeEvent(ev);
-    } catch (e) {
-      if (++sseFailures < 3) reqLog('fallo traduciendo chunk: ' + e.message);
+  writeEvent({ event: 'message_start', data: {
+    type: 'message_start',
+    message: {
+      id: final.id, type: 'message', role: 'assistant', model: final.model,
+      content: [], stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: final.usage.input_tokens, output_tokens: 1 },
+    },
+  } });
+  writeEvent({ event: 'ping', data: { type: 'ping' } });
+  final.content.forEach((block, idx) => {
+    if (block.type === 'text') {
+      writeEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } } });
+      writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: block.text } } });
+      writeEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: idx } });
+    } else if (block.type === 'tool_use') {
+      writeEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} } } });
+      writeEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } } });
+      writeEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: idx } });
     }
-  };
-  const parser = sseLineParser(onData);
-
-  try {
-    for await (const chunk of upRes.body) {
-      if (DEBUG && nChunks < 3) reqLog('chunk #' + nChunks + ' len=' + chunk.length + ' head=' + JSON.stringify(decoder.decode(chunk.slice(0, 80))));
-      nChunks++;
-      if (clientGone) { reqLog('clientGone tras chunk ' + nChunks); break; }
-      kick();
-      parser(decoder.decode(chunk, { stream: true }));
-    }
-  } catch (e) {
-    reqLog('stream upstream interrumpido: ' + (e?.message || e));
-    if (!clientGone && !res.writableEnded) {
-      writeEvent({ event: 'error', data: { type: 'error', error: { type: 'api_error', message: 'stream interrumpido: ' + (e?.message || e) } } });
-    }
-  }
-  clearTimeout(idleTimer);
-  if (DEBUG) reqLog(`fin lectura: chunks=${nChunks} payloads=${nPayloads} clientGone=${clientGone}`);
-
-  for (const ev of tr.finalize()) writeEvent(ev);
+  });
+  writeEvent({ event: 'message_delta', data: {
+    type: 'message_delta',
+    delta: { stop_reason: final.stop_reason, stop_sequence: null },
+    usage: { output_tokens: final.usage.output_tokens },
+  } });
+  writeEvent({ event: 'message_stop', data: { type: 'message_stop' } });
   try { res.end(); } catch {}
-
-  const s = tr.stats;
-  log(`req ${shortId} | OK stream | ${Date.now() - t0}ms | in=${s.inputTokens} out=${s.outputTokens} tools=${s.tools} chars=${s.chars}`);
+  log(`req ${shortId} | OK synth-stream | ${Date.now() - t0}ms | in=${final.usage.input_tokens} out=${final.usage.output_tokens} tools=${final.content.filter(b => b.type === 'tool_use').length} chars=${final.content.filter(b => b.type === 'text').reduce((a, b) => a + (b.text || '').length, 0)}`);
 }
 
 function estimateInput(anthropicBody) {
@@ -355,7 +330,8 @@ function sendJson(res, status, obj, reqLog, t0, statsLike) {
   log(`done | ${Date.now() - t0}ms | in=${s.inputTokens ?? '?'} out=${s.outputTokens ?? '?'} tools=${s.tools ?? 0} | status=${status}`);
 }
 
-/** Reconstruye una respuesta completa a partir del StreamTranslator. */
+/** Reconstruye una respuesta completa a partir del StreamTranslator.
+ *  (en desuso desde el streaming sintético; se conserva por compatibilidad) */
 function anthropicFromCompleteFromStream(tr, requestedModel) {
   const events = tr.finalize();
   // reconstrucción mínima: usamos stats; el contenido textual completo no se
