@@ -67,3 +67,20 @@
 [2026-09-21T01:33:12.595Z] req ou3wc2 | reintento 2/4 en 1916ms (causa: http 502)
 [2026-09-21T01:38:04.102Z] req ou3wc2 | eco gateway model=glm-4-plus
 [2026-09-21T01:38:04.102Z] req ou3wc2 | OK synth-stream | 892582ms | in=31769 out=16384 tools=1 chars=1
+[2026-09-21T03:10:58.483Z] GLM-Bridge v3 (session-born) escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T03:10:58.484Z] thinking=off (override por petición activo) | toolHint=on | retries=4
+[2026-09-21T03:10:58.484Z] creds: /etc/.z-ai-config | sesión: chatId=chat-bf973aea-e55a-4e7a-b9f1-b0ff7bbe016f | token=cargado (...f64FHt3U) | userId=087a39f4-00f2-471c-b94d-97949918b1f5
+[2026-09-21T03:11:17.034Z] req hywyu4 | POST /v1/messages | modelo_up=glm-5.3-flash | stream=false | thinking=off | msgs=1 | tools=0
+[2026-09-21T03:11:17.091Z] req hywyu4 | reintento 1/4 en 949ms (causa: http 429)
+[2026-09-21T03:11:18.054Z] req hywyu4 | reintento 2/4 en 1982ms (causa: http 429)
+[2026-09-21T03:11:20.050Z] req hywyu4 | reintento 3/4 en 3702ms (causa: http 429)
+[2026-09-21T03:11:23.764Z] req hywyu4 | reintento 4/4 en 7242ms (causa: http 429)
+[2026-09-21T03:11:31.006Z] sesión: credenciales RECARGADAS (token cargado (...f64FHt3U), chatId=chat-bf973aea-e55a-4e7a-b9f1-b0ff7bbe016f)
+[2026-09-21T03:11:31.032Z] req hywyu4 | upstream 429: {"error":"Too many requests, please try again later"}
+[2026-09-21T03:11:31.032Z] req hywyu4 | 429 buckets: key_daily=undefined user_10min=25/30 user_daily=191
+[2026-09-21T03:12:12.863Z] GLM-Bridge v3 (session-born) escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T03:12:12.864Z] creds: /etc/.z-ai-config | sesión: chatId=chat-bf973aea-e55a-4e7a-b9f1-b0ff7bbe016f | token=cargado (...f64FHt3U) | userId=087a39f4-00f2-471c-b94d-97949918b1f5
+[2026-09-21T03:12:12.864Z] thinking=off (override por petición activo) | toolHint=on | retries=4
+[2026-09-21T03:12:14.092Z] req 5ny46d | POST /v1/messages | modelo_up=glm-5.3-flash | stream=false | thinking=off | msgs=1 | tools=0
+[2026-09-21T03:12:14.134Z] req 5ny46d | 429 con daily agotado (key=0 user=190): fail-fast, sin reintentos
+[2026-09-21T03:12:14.134Z] req 5ny46d | ERROR upstream: upstream agotó reintentos: 429 daily agotado
