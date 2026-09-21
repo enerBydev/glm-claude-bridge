@@ -10,3 +10,4 @@ skills/
 node_modules/
 # repos embebidos ajenos (el juego vive en su propio repo)
 mario-nuxt/
+tool-results/
