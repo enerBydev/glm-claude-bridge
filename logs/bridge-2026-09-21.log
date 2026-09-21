@@ -65,3 +65,5 @@
 [2026-09-21T01:31:56.631Z] req xib1le | eco gateway model=glm-4-plus
 [2026-09-21T01:31:56.632Z] req xib1le | OK synth-stream | 6226ms | in=17141 out=323 tools=0 chars=1038
 [2026-09-21T01:33:12.595Z] req ou3wc2 | reintento 2/4 en 1916ms (causa: http 502)
+[2026-09-21T01:38:04.102Z] req ou3wc2 | eco gateway model=glm-4-plus
+[2026-09-21T01:38:04.102Z] req ou3wc2 | OK synth-stream | 892582ms | in=31769 out=16384 tools=1 chars=1
