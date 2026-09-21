@@ -39,6 +39,7 @@ const M_URL = `http://127.0.0.1:${MOCK}`;
 const CLAUDE_TIMEOUT_MS = Number(process.env.GLM_AGENTIC_TIMEOUT_MS || 150000);
 const MODEL = 'glm-5.3-flash';
 const PROMPT = 'MOCK:TOOL Usa la herramienta Bash para ejecutar: echo mock-tool-ok. Después informa la salida literal tal cual.';
+const PROMPT_ULTRA = 'MOCK:TASK Lanza un subagente con la herramienta Task que responda exactamente MOCK-SUBAGENT-OK. Espera su resultado y repórtalo literal. ultracode';
 
 const procs = [];
 const tmpDirs = [];
@@ -107,7 +108,9 @@ async function test(name, fn) {
   catch (e) { results.push(`  ✗ ${name}: ${e.message}`); console.error(`  ✗ ${name}: ${e.message}`); process.exitCode = 1; }
 }
 
-async function runClaude(bin) {
+async function runClaude(bin, opts = {}) {
+  const prompt = opts.prompt || PROMPT;
+  const model = opts.model || MODEL;
   // aislamiento total: config propia (onboarding ya hecho) + cwd propio
   const ccConfig = mkTmp('glm-agentic-cc-');
   const ccCwd = mkTmp('glm-agentic-cwd-');
@@ -123,11 +126,11 @@ async function runClaude(bin) {
     ANTHROPIC_BASE_URL: B_URL,
     ANTHROPIC_AUTH_TOKEN: 'glm-bridge-local',
     ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: MODEL,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: MODEL,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: MODEL,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: MODEL,
-    ANTHROPIC_SMALL_FAST_MODEL: MODEL,
+    ANTHROPIC_MODEL: model,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+    ANTHROPIC_SMALL_FAST_MODEL: model,
     CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '1',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '128000',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -139,9 +142,10 @@ async function runClaude(bin) {
     API_TIMEOUT_MS: '120000',
     CLAUDE_CONFIG_DIR: ccConfig,
   };
+  if (opts.effort) env.CLAUDE_CODE_EFFORT_LEVEL = opts.effort;
 
   return new Promise((resolve) => {
-    const child = spawn(bin, ['-p', PROMPT, '--dangerously-skip-permissions', '--output-format', 'text', '--max-turns', '8'],
+    const child = spawn(bin, ['-p', prompt, '--dangerously-skip-permissions', '--output-format', 'text', '--max-turns', '8'],
       { cwd: ccCwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     procs.push({ name: 'claude', p: child });
     let stdout = '', stderr = '';
@@ -236,6 +240,33 @@ async function main() {
     if (!withToolMsg.length) throw new Error('ninguna llamada contenía role:tool');
     const joined = JSON.stringify(withToolMsg[withToolMsg.length - 1].body);
     if (!joined.includes('mock-tool-ok')) throw new Error('la salida del comando no llegó al mock');
+  });
+
+  // 5 ── ULTRA: fachada claude-opus-5 + effort ultracode (workflow Task) ─────
+  await fetch(`${M_URL}/__mock/reset`, { method: 'POST' }).catch(() => {});
+  let runUltra = null;
+  await test('ultra: CC ve claude-opus-5 + effort ultracode y completa Task→subagente→texto', async () => {
+    runUltra = await runClaude(bin, { model: 'claude-opus-5', effort: 'ultracode', prompt: PROMPT_ULTRA });
+    if (runUltra.code !== 0) {
+      throw new Error(`claude exit=${runUltra.code} | stderr: ${(runUltra.stderr || '').slice(-400).replace(/\n/g, ' ⏎ ')}`);
+    }
+    if (!runUltra.stdout.includes('AGENTIC-LOOP-OK')) {
+      throw new Error(`sin AGENTIC-LOOP-OK: "${runUltra.stdout.slice(-300)}"`);
+    }
+    if (/unrecognized_model/.test(runUltra.stderr)) {
+      throw new Error('CC no reconoció claude-opus-5 (fachada rota)');
+    }
+  });
+
+  // 6 ── ULTRA: sin fuga de fachada + subagente de vuelta por el bridge ──────
+  await test('ultra: upstream SIEMPRE glm-5.3-flash (sin fuga) y salida del subagente de vuelta', async () => {
+    const caps = (await mockCapture()).filter((c) => (c.url || '').includes('/chat/completions'));
+    if (caps.length < 2) throw new Error(`solo ${caps.length} llamadas upstream`);
+    const leaked = caps.filter((c) => c.body?.model !== 'glm-5.3-flash');
+    if (leaked.length) throw new Error(`fuga de fachada: ${leaked[0].body?.model}`);
+    const subOut = caps.filter((c) => Array.isArray(c.body?.messages)
+      && c.body.messages.some((m) => m?.role === 'tool' && JSON.stringify(m.content || '').includes('MOCK-SUBAGENT-OK')));
+    if (!subOut.length) throw new Error('la salida del subagente (Task) no regresó por el bridge');
   });
 
   console.log(`\nAGENTIC: ${passed} pasadas, ${results.filter((r) => r.startsWith('  ✗')).length} fallos`);

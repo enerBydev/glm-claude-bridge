@@ -22,9 +22,29 @@ cd glm-claude-bridge && ./install.sh
 glm-claude                      # REPL interactivo (misma UX que `claude`)
 glm-claude -p "haz algo"        # modo no interactivo
 glm-claude --model glm-5.3-flash -p "hola"  # etiqueta de modelo de la sesión
+glm-claude --ultra -p "...ultracode..."      # MODO ULTRACODE (ver abajo)
 glm-bridge doctor               # diagnóstico completo, 0 cuota de API
 glm-bridge probe                # ¿qué modelo sirve REALMENTE el gateway?
 ```
+
+### Modo ultracode — fachada Opus/Fable, cerebro GLM
+
+Claude Code 2.x trae un modo de sesión **ultracode** (esfuerzo de razonamiento
+xhigh + orquestación dinámica nativa de workflows que lanza subagentes
+especializados con las tools `Agent`/`Workflow`). Internamente CC lo gatea con
+su catálogo de modelos (`claude-opus-5`, `claude-fable-5`, `claude-fable-5-1`).
+`glm-claude --ultra` lo activa sobre GLM con **fuga de fachada cero**:
+
+- Claude Code **ve** `claude-opus-5` (sobrescribe con
+  `GLM_ULTRA_MODEL=claude-fable-5`) y `CLAUDE_CODE_EFFORT_LEVEL=ultracode`
+  (sobrescribe con `GLM_EFFORT=xhigh`), así que toda la maquinaria de workflow
+  se activa.
+- El bridge **sirve el modelo GLM por defecto de la sesión en cada llamada
+  upstream** (cualquier nombre no-`glm*` se mapea al modelo de sesión) y honra
+  `thinking:{type:"effort"}` como thinking híbrido nativo de GLM.
+- Verificado offline por la suite agéntica del QA: CC lanza un subagente real
+  por el bridge (tool `Agent`) mientras cada petición upstream lleva
+  `glm-5.3-flash` — 6/6 aserciones, cuota cero.
 
 Qué hace `install.sh` (idempotente, seguro de re-ejecutar):
 

@@ -250,8 +250,12 @@ async function handleMessages(req, res) {
   );
 
   // thinking: default del entorno (GLM_THINKING) con override por petición —
-  // si CC pide thinking:{type:'enabled'} se honra nativamente.
-  const requestThinking = anthropicBody.thinking?.type === 'enabled';
+  // si CC pide thinking:{type:'enabled'} se honra nativamente. CC moderno
+  // (ultracode / modelos con effort) pide thinking:{type:'effort',
+  // effort:'xhigh'|...} — también se honra: GLM hace su razonamiento híbrido.
+  const requestThinking =
+    anthropicBody.thinking?.type === 'enabled' ||
+    anthropicBody.thinking?.type === 'effort';
   const effectiveThinking = THINKING || requestThinking;
 
   // ojo: en Node 24 los chunks de fetch.body son Uint8Array (no Buffer):

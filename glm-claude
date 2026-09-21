@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================================
 # glm-claude — lanzador de Claude Code oficial sobre GLM vía GLM-Bridge.
-# Uso: glm-claude [--model NOMBRE] [argumentos normales de claude]
+# Uso: glm-claude [--model NOMBRE] [--ultra] [argumentos normales de claude]
 #   glm-claude                       → REPL interactivo
 #   glm-claude -p "haz X"            → modo no interactivo
 #   glm-claude --model glm-x -p ...  → etiqueta de modelo para esta sesión
+#   glm-claude --ultra -p ...        → MODO ULTRACODE: CC ve claude-opus-5
+#                                      (o GLM_ULTRA_MODEL: claude-fable-5,
+#                                      claude-fable-5-1) + effort ultracode
+#                                      (xhigh + Workflow orchestration);
+#                                      el bridge sigue sirviendo el modelo
+#                                      por defecto de la sesión (GLM).
 # Nota: el gateway Z.ai actualmente ignora el campo model (sirve su default);
 # --model configura la etiqueta que CC ve/pide y que el bridge reenviará
 # literal si el gateway algún día empieza a rutear por nombre.
@@ -20,8 +26,9 @@ done
 BRIDGE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PORT="${GLM_BRIDGE_PORT:-8787}"
 
-# 0) --model exclusivo del lanzador (se consume y no llega a claude)
+# 0) flags exclusivos del lanzador (se consumen y no llegan a claude)
 SESSION_MODEL=""
+ULTRA=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --model)
@@ -29,6 +36,8 @@ while [ $# -gt 0 ]; do
       SESSION_MODEL="$2"; shift 2 ;;
     --model=*)
       SESSION_MODEL="${1#--model=}"; shift ;;
+    --ultra|--ultracode)
+      ULTRA=1; shift ;;
     *) break ;;
   esac
 done
@@ -65,7 +74,15 @@ fi
 export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-glm-bridge-local}"
 export ANTHROPIC_API_KEY=""                      # fuerza uso de AUTH_TOKEN
-export ANTHROPIC_MODEL="${GLM_MODEL:-${GLM_DEFAULT_MODEL:-glm-5.3-flash}}"
+if [ "$ULTRA" -eq 1 ]; then
+  # MODO ULTRACODE: fachada de modelo del catálogo interno de CC (con effort
+  # xhigh + Workflow orchestration nativo). NO se fija GLM_MODEL: el bridge
+  # sigue resolviendo y sirviendo el modelo POR DEFECTO de la sesión.
+  export ANTHROPIC_MODEL="${GLM_ULTRA_MODEL:-claude-opus-5}"
+  export CLAUDE_CODE_EFFORT_LEVEL="${GLM_EFFORT:-ultracode}"
+else
+  export ANTHROPIC_MODEL="${GLM_MODEL:-${GLM_DEFAULT_MODEL:-glm-5.3-flash}}"
+fi
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$ANTHROPIC_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$ANTHROPIC_MODEL"

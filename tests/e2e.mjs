@@ -294,6 +294,43 @@ async function main() {
     assert.equal(j.content[0].text, 'MOCK-OK recuperado');
   });
 
+  // 15 ── fachada ultracode: claude-opus-5 / claude-fable-5 → modelo sesión --
+  await test('fachada ultra: claude-opus-5 y claude-fable-5 → modelo de sesión', async () => {
+    await bridgePost({ model: 'claude-opus-5', max_tokens: 20, messages: [{ role: 'user', content: 'ultra-opus' }] });
+    await bridgePost({ model: 'claude-fable-5', max_tokens: 20, messages: [{ role: 'user', content: 'ultra-fable' }] });
+    const caps = await mockCapture(M1);
+    assert.equal(caps[caps.length - 2].body.model, 'glm-5.3-flash', 'opus no mapeado');
+    assert.equal(caps[caps.length - 1].body.model, 'glm-5.3-flash', 'fable no mapeado');
+  });
+
+  // 16 ── thinking por effort (ultracode) → GLM thinking activado -------------
+  await test('thinking type:effort (ultracode) → upstream thinking enabled', async () => {
+    const r = await bridgePost({
+      model: 'claude-opus-5', max_tokens: 50,
+      thinking: { type: 'effort', effort: 'xhigh' },
+      messages: [{ role: 'user', content: 'esfuerzo xhigh' }],
+    });
+    assert.equal(r.status, 200);
+    const caps = await mockCapture(M1);
+    assert.equal(caps[caps.length - 1].body.thinking?.type, 'enabled', 'effort no honrado como thinking');
+  });
+
+  // 17 ── workflow: Task tool_call para spawn de subagentes -------------------
+  await test('workflow: marcador MOCK:TASK → tool_use Task (subagente determinista)', async () => {
+    const r = await bridgePost({
+      model: 'glm-5.3-flash', max_tokens: 100,
+      tools: [{ name: 'Task', description: 'spawn subagent', input_schema: { type: 'object' } }],
+      messages: [{ role: 'user', content: 'MOCK:TASK lanza un subagente' }],
+    });
+    const j = await r.json();
+    assert.equal(j.stop_reason, 'tool_use');
+    const tool = j.content.find((b) => b.type === 'tool_use');
+    assert.equal(tool.name, 'Task');
+    assert.equal(tool.input.run_in_background, false);
+    assert.match(tool.input.prompt, /MOCK-SUBAGENT-OK/);
+    assert.equal(tool.input.subagent_type, 'general-purpose');
+  });
+
   console.log(`\n${passed} pasadas, ${results.filter((r) => r.startsWith('  ✗')).length} fallos`);
   for (const r of results) console.log(r);
 }

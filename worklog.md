@@ -294,3 +294,23 @@ Work Log:
 
 Stage Summary:
 - El bridge es agnóstico de versión de CC (protocolo de cable estable + resolución dinámica del binario en cada lanzamiento); ahora doctor además avisa de releases nuevas y recuerda validar con qa.sh.
+
+---
+Task ID: 11-ultracode
+Agent: Super Z (principal)
+Task: Ultracode nativo sobre GLM — fachada Opus/Fable con cerebro de sesión (pregunta del usuario)
+
+Work Log:
+- Forense del binario CC 2.1.278 (strings del ELF): "ultracode" = effort xhigh + orquestación dinámica de workflows nativa; catálogo interno con claude-opus-5 / claude-fable-5 / claude-fable-5-1 (effort_cost_index por modelo); CLAUDE_CODE_EFFORT_LEVEL acepta "ultracode" (alias→xhigh); keyword "ultracode" en el prompt dispara la tool Workflow (trigger por defecto ON).
+- Toolset runtime de CC 2.1.278 capturado vía mock: Agent, Bash, Cron*, Edit, EnterWorktree, ExitWorktree, ListAgents, NotebookEdit, Read, ReportFindings, ScheduleWakeup, SendMessage, Skill, TaskStop, WebFetch, WebSearch, Workflow, Write — la tool de spawn es "Agent" (no "Task"); Workflow sólo en el agente principal.
+- Bug cazado en el mock: las tools upstream viajan en formato OpenAI {function:{name}} — leer t?.name daba array vacío → fallback "Task" → resolveToolName por contención lo mandaba a TaskStop (InputValidationError). Corregido a t?.function?.name.
+- bridge.mjs: thinking:{type:"effort"} (xhigh de ultracode) ahora se honra como thinking activo (GLM híbrido).
+- glm-claude: nuevo flag --ultra/--ultracode → ANTHROPIC_MODEL=claude-opus-5 (GLM_ULTRA_MODEL) + CLAUDE_CODE_EFFORT_LEVEL=ultracode (GLM_EFFORT), SIN fijar GLM_MODEL → el bridge sigue sirviendo el modelo por defecto de la sesión.
+- mock: marcador MOCK:TASK → tool_call de Agent/Task con run_in_background:false (bucle determinista: principal → subagente → hand-back → cierre).
+- E2E 14→17 escenarios (fachada opus/fable→modelo sesión; thinking effort→enabled; MOCK:TASK→tool_use Task). Agéntico 4→6 aserciones (CC ve opus-5+ultracode sin unrecognized_model; lanza SUBAGENTE real por el bridge con la tool Agent; cero fuga: todo upstream=glm-5.3-flash).
+- QA completo: TODO VERDE (sintaxis 14, 37 unitarios, 2 smokes, instalador, 17 E2E, 6 agénticas, doctor).
+- Prueba real con prompt literal del usuario: bloqueada por 429 fail-fast del gateway (key-daily=0, user=32) en 36ms — el mecanismo anti-desperdicio confirmado; claude reintenta el 429 en silencio (parecía cuelgue). Reintentar tras el reset ~16:00 UTC.
+- Hallazgo adicional: claude -p cuelga esperando EOF de stdin cuando stdin es un pipe abierto (los tests usan stdio ignore) — lanzar siempre con </dev/null desde shells no interactivos.
+
+Stage Summary:
+- ULTRACODE NATIVO LOGRADO SIN CUOTA: glm-claude --ultra activa xhigh+workflow en CC (que se cree Opus 5) mientras el bridge sirve glm-5.3-flash de la sesión en TODAS las llamadas (incluidas las del subagente). Ajuste del bridge: 1 línea (thinking effort). Documentado en ambos READMEs.

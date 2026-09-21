@@ -4,6 +4,8 @@
 // Permite QA completo del bridge (E2E) SIN tocar el gateway real de Z.ai.
 //
 // Comportamiento por marcadores en el último mensaje del usuario:
+//   MOCK:TASK   → respuesta con tool_call de Task (spawn de subagente;
+//                 run_in_background:false para bucle determinista)
 //   MOCK:TOOL   → respuesta con tool_calls (Bash)
 //   MOCK:THINK  → respuesta con reasoning_content + contenido
 //   (defecto)   → eco: "MOCK-OK <última línea del prompt>"
@@ -88,10 +90,31 @@ function completion(bodyObj, model) {
     };
   }
   const text = lastUserText(bodyObj);
-  const marker = text.includes('MOCK:TOOL') ? 'tool' : text.includes('MOCK:THINK') ? 'think' : 'echo';
+  const marker = text.includes('MOCK:TASK') ? 'task'
+    : text.includes('MOCK:TOOL') ? 'tool'
+    : text.includes('MOCK:THINK') ? 'think' : 'echo';
   const msg = { role: 'assistant', content: null };
 
-  if (marker === 'tool') {
+  if (marker === 'task') {
+    // workflow agéntico: pedir el spawn de un subagente. Las tools llegan en
+    // formato OpenAI {type:'function', function:{name}} (el bridge las
+    // traduce); mapear function.name con fallback al plano por compatibilidad.
+    const names = (Array.isArray(bodyObj?.tools) ? bodyObj.tools : [])
+      .map((t) => t?.function?.name || t?.name).filter(Boolean);
+    const taskName = ['Task', 'Agent'].find((n) => names.includes(n))
+      || names.find((n) => /^(task|agent)$/i.test(n))
+      || 'Task';
+    msg.content = null;
+    msg.tool_calls = [{
+      id: 'toolu_mock_task_1', type: 'function',
+      function: { name: taskName, arguments: JSON.stringify({
+        description: 'subagente mock',
+        prompt: 'Di exactamente MOCK-SUBAGENT-OK y nada más.',
+        subagent_type: 'general-purpose',
+        run_in_background: false,
+      }) },
+    }];
+  } else if (marker === 'tool') {
     msg.content = null;
     msg.tool_calls = [{
       id: 'toolu_mock_1', type: 'function',
@@ -107,7 +130,7 @@ function completion(bodyObj, model) {
   return {
     id: 'chatcmpl-mock-' + Date.now().toString(36),
     object: 'chat.completion', created: Math.floor(Date.now() / 1000), model,
-    choices: [{ index: 0, message: msg, finish_reason: marker === 'tool' ? 'tool_calls' : 'stop' }],
+    choices: [{ index: 0, message: msg, finish_reason: (marker === 'tool' || marker === 'task') ? 'tool_calls' : 'stop' }],
     usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
   };
   // nota: los mensajes tool_result de Anthropic llegan traducidos a role:'tool'

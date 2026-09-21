@@ -15,7 +15,7 @@
 #      StreamTranslator → SSE Anthropic válido
 #   4. Preflight hermético del instalador (HOME temporal sin sesión ni claude
 #      → install.sh --without-claude → shims + doctor)
-#   5. E2E con mock del gateway (14 escenarios: tool calling, thinking,
+#   5. E2E con mock del gateway (17 escenarios: tool calling, thinking,
 #      streaming, visión, rotación de credenciales y baseUrl en vivo,
 #      fail-fast 429, 401, recuperación) — cero cuota real
 #   6. AGÉNTICO: Claude Code real (binario oficial) ↔ bridge ↔ mock — bucle
@@ -101,7 +101,7 @@ fi
 
 # ── 5) E2E con mock (cero cuota) ─────────────────────────────────────────────
 if [ "$FAST" -eq 0 ]; then
-  step "5/7 E2E contra mock del gateway (14 escenarios, cero cuota)"
+  step "5/7 E2E contra mock del gateway (17 escenarios, cero cuota)"
   pkill -f "tests/mock-upstream.mjs" 2>/dev/null; pkill -f "bridge.mjs --glm-e2e" 2>/dev/null; sleep 0.3
   if OUT="$(node tests/e2e.mjs 2>&1)"; then
     pass "$(echo "$OUT" | grep -E '^[0-9]+ pasadas' | head -1)"
