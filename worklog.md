@@ -144,3 +144,26 @@ Stage Summary:
 - El test agéntico demuestra Claude Code oficial funcionando END-TO-END sobre GLM vía glm-bridge: lectura de spec, escritura multi-fichero, bucle de herramientas, --continue entre sesiones, y build verificado.
 - DESCUBRIMIENTO CLAVE para producción: usar el bridge en modo streaming sintético (default ahora) — el SSE nativo del gateway es NO FIABLE bajo carga (blackhole 300s).
 - Pendiente: push de ambos repos (game → enerBydev/mario-nuxt-pixel → Pages; bridge → enerBydev/glm-claude-bridge) cuando el usuario provea token fresco.
+
+---
+Task ID: 5-entrega-final
+Agent: Super Z (principal)
+Task: Push de ambos repos a GitHub con token del usuario + terminar de desarrollar el juego (bugfix runtime) + GitHub Pages en vivo
+
+Work Log:
+- PUSH bridge: enerBydev/glm-claude-bridge main -> 8e405d4 (v2 streaming sintético + probe + --model + eco logging + logs de sesión). Token usado en remote temporal y limpiado de .git/config tras cada push.
+- PUSH juego: repo creado vía API como PÚBLICO (requisito Pages en plan free): enerBydev/mario-nuxt-pixel.
+- CI: deploy.yml original usaba `nix build .#pages`, pero el sandbox de Nix en Actions bloquea red y el buildPhase hace `npm ci` -> fallaría. Sin root/sudo no se puede instalar Nix localmente para iterar hashes fetchNpmDeps. Decisión: CI usa `nix develop -c "npm ci && npm run generate"` (toolchain nodejs_20 fijada por flake.lock, shell sin sandbox); packages.pages se conserva para uso local con sandbox relaxed, documentado en flake.nix y README.
+- PRIMERA VERIFICACIÓN EN VIVO DETECTÓ 500: TypeError "Cannot read properties of null (reading 'state')" -> el código generado por CC bajo throttling era un cascarón no funcional. Bugfix forense completo:
+  * GameCanvas.vue: plantilla evaluaba game.state con game=null antes de onMounted (crash); game no reactivo (overlays nunca actualizarían); game.update(input) con orden de args incorrecto (engine espera (dt, input)); Enter llamaba reset() sin start(); pausa mutaba estado del engine. Reescrito: refs reactivas screen/paused, draw SIEMPRE en cada frame, update solo en play y no pausado con FIXED_TIMESTEP correcto, Enter title->start() / over|win->reset()+start(), jumpPressed consumido por engine.
+  * gameSprites.js: filas con longitudes inconsistentes, chars sin entrada en paleta (p/a/i), 4 sprites de Mario clonados, SPR no exponía mario/coin/flag (draw crashearía), flip con offset erróneo. Reescrito: paleta completa, sprites NES 16x16 reales (mario idle/run1/run2/jump, goomba x2 + flat, moneda, bandera, tiles suelo/ladrillo/?/bloque), export UI para colores HUD/cielo.
+  * gameEngine.js: colisiones con flag checkSolid invertido (Mario atravesaba todo), mapas vacíos de 28 tiles con banderas en x=2400 inalcanzables, PAL[0]/PAL[12] sobre paleta de letras (undefined), drawTile/drawSprite con args intercambiados, reset() rompía referencia expuesta del estado. Reescrito: builder programático de 3 niveles (120/140/160 tiles, fosos, plataformas, escaleras, ? blocks, monedas, goombas, banderas alcanzables), colisión AABB por ejes con snap a tile, bump de ? blocks, invulnerabilidad + respawn, tiempo/lives, cámara con clamp, HUD/pantallas title|win|over.
+- VALIDACIÓN HEADLESS (scripts/validate.mjs, npm test): 47/47 checks OK (integridad sprites, simulación 4200 pasos, estabilidad de referencia tras reset, geometría de banderas, resolución de símbolos, counters: score 1800/coins 9/game over en bot ciego).
+- E2E NAVEGADOR (agent-browser): local primero, luego en vivo. Title OK, Enter -> play, ArrowRight + Space: SCORE 800/COINS 04 local y 600/03 en vivo, cámara scrollea, ? blocks renderizados, TIME corre, CERO errores de consola.
+- DEPLOY: 2 runs de Actions (5f34840 y a1ff25e) -> success a la primera en ambos. Pages activado vía API con build_type=workflow.
+
+Stage Summary:
+- JUEGO EN PRODUCCIÓN: https://enerbydev.github.io/mario-nuxt-pixel/ (verificado E2E en vivo).
+- REPOS: enerBydev/glm-claude-bridge (privado, 8e405d4) y enerBydev/mario-nuxt-pixel (público, a1ff25e) actualizados.
+- Lección: build OK != runtime OK; el smoke test de navegador es obligatorio para artefactos agénticos. La validación headless npm test queda integrada en el repo.
+- Nota seguridad: el token GH fue pegado de nuevo en chat; recomendar revocación al finalizar.
