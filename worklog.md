@@ -281,3 +281,16 @@ Work Log:
 
 Stage Summary:
 - Repo sincronizado: remoto main = f8b306c = local. QA 7/7 etapas verdes incluyendo el bucle agéntico completo con Claude Code real contra el mock.
+
+---
+Task ID: 10-doctor-version-check
+Agent: Super Z (principal)
+Task: doctor compara la versión de Claude Code instalada vs última release en npm
+
+Work Log:
+- glm-bridge doctor: nueva línea informativa que consulta npm (timeout 6s, tolerante a offline) y compara la versión instalada con la última release de @anthropic-ai/claude-code; sugiere npm install -g ...@latest + ./qa.sh si hay versión nueva.
+- Motivación: responder a la duda "¿qué pasa si Claude Code se actualiza?" — tras actualizar, doctor + ./qa.sh validan compatibilidad sin cuota.
+- Verificado en vivo: "claude-code al día (2.1.278 = última release en npm)". qa.sh --fast verde.
+
+Stage Summary:
+- El bridge es agnóstico de versión de CC (protocolo de cable estable + resolución dinámica del binario en cada lanzamiento); ahora doctor además avisa de releases nuevas y recuerda validar con qa.sh.

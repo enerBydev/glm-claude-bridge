@@ -154,6 +154,22 @@ NODE
   done
   if [ -n "$claude_bin" ]; then
     ok "claude: $claude_bin ($("$claude_bin" --version 2>/dev/null | head -1 || echo 'versión desconocida'))"
+    # comparación con la última release publicada en npm (informativo;
+    # tolerante a offline: si no hay red se omite sin fallar)
+    if command -v npm >/dev/null 2>&1; then
+      latest_cc="$(timeout 6 npm view @anthropic-ai/claude-code version 2>/dev/null | tail -1 | tr -d '[:space:]')"
+      inst_cc="$("$claude_bin" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)"
+      if [ -n "$latest_cc" ] && [ -n "$inst_cc" ]; then
+        if [ "$inst_cc" = "$latest_cc" ]; then
+          ok "claude-code al día ($inst_cc = última release en npm)"
+        else
+          echo "  · hay release nueva de Claude Code: $latest_cc (instalada: $inst_cc)"
+          echo "      actualizar: npm install -g @anthropic-ai/claude-code@latest y luego ./qa.sh (valida compatibilidad offline)"
+        fi
+      else
+        echo "  · no se pudo consultar npm (¿sin red?) — chequeo de versión omitido"
+      fi
+    fi
   else
     bad "claude no instalado → ejecuta: $BRIDGE_DIR/install.sh --with-claude"
   fi
