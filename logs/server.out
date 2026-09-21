@@ -11,3 +11,180 @@
 [2026-09-20T21:57:43.822Z] req vh5dha | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
 [2026-09-20T21:57:45.949Z] req vh5dha | eco gateway model=glm-4-plus
 [2026-09-20T21:57:45.951Z] req vh5dha | OK stream | 2131ms | in=12950 out=4 tools=0 chars=11
+[2026-09-20T23:03:32.111Z] req yztkl5 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:03:34.807Z] req yztkl5 | OK stream | 2697ms | in=13228 out=35 tools=1 chars=69
+[2026-09-20T23:03:34.862Z] req ukfvnt | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-20T23:03:36.070Z] req ukfvnt | OK stream | 1209ms | in=15021 out=45 tools=1 chars=73
+[2026-09-20T23:03:36.140Z] req yf5k7s | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=8 | tools=20
+[2026-09-20T23:03:37.150Z] req yf5k7s | OK stream | 1011ms | in=15355 out=44 tools=1 chars=77
+[2026-09-20T23:03:37.174Z] req c1k20p | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=11 | tools=20
+[2026-09-20T23:03:41.855Z] req c1k20p | OK stream | 4682ms | in=16829 out=145 tools=1 chars=114
+[2026-09-20T23:03:41.879Z] req 1ih39c | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=14 | tools=20
+[2026-09-20T23:03:44.785Z] req 1ih39c | OK stream | 2907ms | in=17032 out=156 tools=1 chars=1
+[2026-09-20T23:03:44.806Z] req l45zni | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=17 | tools=20
+[2026-09-20T23:07:02.245Z] recibido SIGTERM, cerrando
+[2026-09-20T23:07:02.557Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-20T23:07:02.558Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-20T23:17:59.778Z] req xm5t1s | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:18:00.407Z] req xm5t1s | eco gateway model=glm-4-plus
+[2026-09-20T23:18:00.416Z] req xm5t1s | OK stream | 639ms | in=13240 out=5 tools=0 chars=11
+[2026-09-20T23:18:48.884Z] req 8r9i8t | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:18:50.001Z] req 8r9i8t | OK stream | 1118ms | in=13286 out=35 tools=1 chars=63
+[2026-09-20T23:18:50.061Z] req co80bd | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-20T23:18:51.621Z] req co80bd | OK stream | 1561ms | in=15079 out=44 tools=1 chars=58
+[2026-09-20T23:18:51.690Z] req 59rg27 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=8 | tools=20
+[2026-09-20T23:18:52.792Z] req 59rg27 | OK stream | 1103ms | in=15490 out=34 tools=1 chars=33
+[2026-09-20T23:18:52.816Z] req dnux6p | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=11 | tools=20
+[2026-09-20T23:18:56.085Z] req dnux6p | OK stream | 3270ms | in=16954 out=141 tools=1 chars=96
+[2026-09-20T23:18:56.112Z] req phcbs5 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=14 | tools=20
+[2026-09-20T23:18:58.877Z] req phcbs5 | OK stream | 2766ms | in=17155 out=126 tools=1 chars=1
+[2026-09-20T23:18:58.903Z] req c4vkfs | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=17 | tools=20
+[2026-09-20T23:22:03.145Z] recibido SIGTERM, cerrando
+[2026-09-20T23:22:03.459Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-20T23:22:03.460Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-20T23:22:05.091Z] req xlmcok | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:22:06.215Z] req xlmcok | eco gateway model=glm-4-plus
+[2026-09-20T23:22:06.218Z] req xlmcok | OK stream | 1129ms | in=13292 out=35 tools=1 chars=66
+[2026-09-20T23:22:06.278Z] req 1rixdh | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-20T23:22:06.278Z] req 1rixdh | throttle: esperando 1813ms (intervalo mínimo 3000ms)
+[2026-09-20T23:22:09.382Z] req 1rixdh | OK stream | 3105ms | in=15085 out=35 tools=1 chars=44
+[2026-09-20T23:22:09.411Z] req na73ye | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=8 | tools=20
+[2026-09-20T23:22:09.411Z] req na73ye | throttle: esperando 1682ms (intervalo mínimo 3000ms)
+[2026-09-20T23:22:14.197Z] req na73ye | OK stream | 4787ms | in=16550 out=146 tools=1 chars=111
+[2026-09-20T23:22:14.228Z] req todw7g | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=11 | tools=20
+[2026-09-20T23:22:18.248Z] req todw7g | OK stream | 4021ms | in=16756 out=129 tools=1 chars=1
+[2026-09-20T23:22:18.278Z] req 39788h | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=14 | tools=20
+[2026-09-20T23:27:18.299Z] req 39788h | OK stream | 300022ms | in=12731 out=1 tools=0 chars=1
+[2026-09-20T23:36:38.311Z] req rsnly3 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:36:38.942Z] req rsnly3 | OK stream | 632ms | in=13247 out=6 tools=0 chars=12
+[2026-09-20T23:37:02.180Z] recibido SIGTERM, cerrando
+[2026-09-20T23:37:02.496Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-20T23:37:02.497Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-20T23:56:50.766Z] req 6wgrl4 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:56:54.806Z] req 6wgrl4 | eco gateway model=glm-4-plus
+[2026-09-20T23:56:54.809Z] req 6wgrl4 | OK stream | 4045ms | in=13243 out=19 tools=0 chars=68
+[2026-09-20T23:56:55.272Z] req mod4bz | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:56:55.273Z] req mod4bz | throttle: esperando 3493ms (intervalo mínimo 8000ms)
+[2026-09-20T23:56:59.295Z] req mod4bz | OK stream | 4023ms | in=13243 out=19 tools=0 chars=68
+[2026-09-20T23:56:59.773Z] req ylrt7d | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:56:59.773Z] req ylrt7d | throttle: esperando 6995ms (intervalo mínimo 8000ms)
+[2026-09-20T23:57:07.620Z] req ylrt7d | OK stream | 7848ms | in=13243 out=57 tools=1 chars=125
+[2026-09-20T23:57:07.725Z] req f08d16 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-20T23:57:07.726Z] req f08d16 | throttle: esperando 7045ms (intervalo mínimo 8000ms)
+[2026-09-20T23:57:16.332Z] req f08d16 | OK stream | 8608ms | in=15590 out=44 tools=1 chars=87
+[2026-09-20T23:57:16.363Z] req bltopk | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=8 | tools=20
+[2026-09-20T23:57:16.364Z] req bltopk | throttle: esperando 6410ms (intervalo mínimo 8000ms)
+[2026-09-20T23:57:24.027Z] req bltopk | OK stream | 7664ms | in=17064 out=64 tools=1 chars=190
+[2026-09-20T23:57:24.056Z] req v8l92i | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=11 | tools=20
+[2026-09-20T23:57:24.056Z] req v8l92i | throttle: esperando 6720ms (intervalo mínimo 8000ms)
+[2026-09-20T23:57:31.278Z] req v8l92i | OK stream | 7223ms | in=17254 out=24 tools=1 chars=1
+[2026-09-20T23:57:31.403Z] req 3wcrh1 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=14 | tools=20
+[2026-09-20T23:57:31.403Z] req 3wcrh1 | throttle: esperando 7373ms (intervalo mínimo 8000ms)
+[2026-09-20T23:58:23.158Z] req j03i4e | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-20T23:58:23.500Z] req j03i4e | OK stream | 343ms | in=13247 out=6 tools=0 chars=12
+[2026-09-20T23:59:20.825Z] recibido SIGTERM, cerrando
+[2026-09-20T23:59:21.153Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-20T23:59:21.154Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-21T00:17:48.430Z] req qu0wby | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:17:52.307Z] req qu0wby | eco gateway model=glm-4-plus
+[2026-09-21T00:17:52.309Z] req qu0wby | OK stream | 3880ms | in=13257 out=29 tools=1 chars=1
+[2026-09-21T00:17:52.370Z] req rx22tf | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T00:17:52.370Z] req rx22tf | throttle: esperando 4060ms (intervalo mínimo 8000ms)
+[2026-09-21T00:17:57.360Z] req rx22tf | OK stream | 4991ms | in=15028 out=26 tools=0 chars=83
+[2026-09-21T00:18:18.636Z] req 4vcrrs | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:18:19.882Z] req 4vcrrs | OK stream | 1246ms | in=13350 out=46 tools=1 chars=108
+[2026-09-21T00:18:19.979Z] req 7uo4d8 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T00:18:19.979Z] req 7uo4d8 | throttle: esperando 6658ms (intervalo mínimo 8000ms)
+[2026-09-21T00:18:29.370Z] req 7uo4d8 | OK stream | 9392ms | in=16522 out=138 tools=1 chars=85
+[2026-09-21T00:18:29.401Z] req 7zegvi | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=8 | tools=20
+[2026-09-21T00:18:29.401Z] req 7zegvi | throttle: esperando 5240ms (intervalo mínimo 8000ms)
+[2026-09-21T00:18:37.899Z] req 7zegvi | OK stream | 8499ms | in=16720 out=152 tools=1 chars=1
+[2026-09-21T00:18:37.929Z] req wbcfz1 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=11 | tools=20
+[2026-09-21T00:18:37.929Z] req wbcfz1 | throttle: esperando 4714ms (intervalo mínimo 8000ms)
+[2026-09-21T00:18:43.874Z] req wbcfz1 | OK stream | 5946ms | in=16930 out=34 tools=1 chars=1
+[2026-09-21T00:18:43.896Z] req ov1hsv | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=14 | tools=20
+[2026-09-21T00:18:43.897Z] req ov1hsv | throttle: esperando 6747ms (intervalo mínimo 8000ms)
+[2026-09-21T00:18:54.403Z] req ov1hsv | OK stream | 10507ms | in=17023 out=162 tools=0 chars=601
+[2026-09-21T00:19:03.172Z] req 1boxaz | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=17 | tools=20
+[2026-09-21T00:19:11.534Z] req 1boxaz | OK stream | 8362ms | in=17372 out=285 tools=1 chars=1
+[2026-09-21T00:19:11.598Z] req hsixer | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=20 | tools=20
+[2026-09-21T00:19:20.235Z] req hsixer | OK stream | 8637ms | in=17714 out=295 tools=1 chars=1
+[2026-09-21T00:19:20.266Z] req jm3b1l | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=23 | tools=20
+[2026-09-21T00:19:27.808Z] req jm3b1l | OK stream | 7543ms | in=18069 out=444 tools=1 chars=1
+[2026-09-21T00:19:27.839Z] req muvwbz | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=26 | tools=20
+[2026-09-21T00:19:27.839Z] req muvwbz | throttle: esperando 427ms (intervalo mínimo 8000ms)
+[2026-09-21T00:19:32.570Z] req muvwbz | OK stream | 4731ms | in=18570 out=218 tools=0 chars=762
+[2026-09-21T00:19:43.295Z] req kay1mx | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=29 | tools=20
+[2026-09-21T00:24:43.329Z] req kay1mx | OK stream | 300035ms | in=14697 out=1 tools=0 chars=1
+[2026-09-21T00:24:43.536Z] req zf2zsh | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=29 | tools=20
+[2026-09-21T00:29:42.842Z] recibido SIGTERM, cerrando
+[2026-09-21T00:29:43.156Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T00:29:43.156Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-21T00:29:54.386Z] req k9qh2n | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=32 | tools=20
+[2026-09-21T00:34:54.520Z] req k9qh2n | eco gateway model=glm-4-plus
+[2026-09-21T00:34:54.522Z] req k9qh2n | OK stream | 300138ms | in=14805 out=1 tools=0 chars=1
+[2026-09-21T00:34:54.719Z] req 6pry2d | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=32 | tools=20
+[2026-09-21T00:39:54.747Z] req 6pry2d | OK stream | 300029ms | in=14843 out=1 tools=0 chars=1
+[2026-09-21T00:43:25.193Z] req f7ucn7 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:48:25.235Z] req f7ucn7 | OK stream | 300042ms | in=11295 out=1 tools=0 chars=1
+[2026-09-21T00:48:25.450Z] req 9mmenp | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:53:25.485Z] req 9mmenp | OK stream | 300036ms | in=11327 out=1 tools=0 chars=1
+[2026-09-21T00:54:06.444Z] recibido SIGTERM, cerrando
+[2026-09-21T00:54:06.759Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T00:54:06.760Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-21T00:54:08.519Z] req 9q878c | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:54:09.616Z] req 9q878c | eco gateway model=glm-4-plus
+[2026-09-21T00:54:09.617Z] req 9q878c | OK synth-stream | 1100ms | in=13287 out=37 tools=1 chars=1
+[2026-09-21T00:54:09.684Z] req uemgyk | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T00:54:09.684Z] req uemgyk | throttle: esperando 835ms (intervalo mínimo 2000ms)
+[2026-09-21T00:54:11.657Z] req uemgyk | eco gateway model=glm-4-plus
+[2026-09-21T00:54:11.658Z] req uemgyk | OK synth-stream | 1975ms | in=15077 out=40 tools=0 chars=137
+[2026-09-21T00:54:27.059Z] req 32hntb | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T00:59:27.086Z] req 32hntb | reintento 1/4 en 914ms (causa: http 502)
+[2026-09-21T01:00:27.817Z] req guakx6 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:03:53.221Z] req 2lpi26 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:04:28.018Z] req 32hntb | reintento 2/4 en 1843ms (causa: http 502)
+[2026-09-21T01:05:27.854Z] req guakx6 | reintento 1/4 en 1083ms (causa: http 502)
+[2026-09-21T01:08:53.256Z] req 2lpi26 | reintento 1/4 en 986ms (causa: http 502)
+[2026-09-21T01:09:29.879Z] req 32hntb | reintento 3/4 en 3811ms (causa: http 502)
+[2026-09-21T01:09:53.861Z] req kxnj1w | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:10:28.957Z] req guakx6 | reintento 2/4 en 2028ms (causa: http 502)
+[2026-09-21T01:12:49.775Z] recibido SIGTERM, cerrando
+[2026-09-21T01:12:50.086Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T01:12:50.087Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-21T01:12:51.371Z] req k8a3vk | POST /v1/messages | modelo_up=glm-5.3-flash | stream=true | msgs=1 | tools=0
+[2026-09-21T01:12:52.649Z] req k8a3vk | eco gateway model=glm-4-plus
+[2026-09-21T01:12:52.650Z] req k8a3vk | OK synth-stream | 1280ms | in=5710 out=5 tools=0 chars=11
+[2026-09-21T01:13:25.511Z] req retniv | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:15:48.319Z] req retniv | eco gateway model=glm-4-plus
+[2026-09-21T01:15:48.321Z] req retniv | OK synth-stream | 142810ms | in=13639 out=8192 tools=1 chars=1
+[2026-09-21T01:15:48.576Z] req 5uowup | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T01:18:01.307Z] req 5uowup | eco gateway model=glm-4-plus
+[2026-09-21T01:18:01.310Z] req 5uowup | OK synth-stream | 132735ms | in=26542 out=8192 tools=1 chars=1
+[2026-09-21T01:18:38.165Z] recibido SIGTERM, cerrando
+[2026-09-21T01:18:38.478Z] GLM-Bridge escuchando en http://127.0.0.1:8787 | modelo=glm-5.3-flash | upstream=https://internal-api.z.ai/v1/chat/completions
+[2026-09-21T01:18:38.479Z] creds: /etc/.z-ai-config | thinking=off | toolHint=on | retries=4
+[2026-09-21T01:18:40.190Z] req he82f7 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:23:11.280Z] req he82f7 | eco gateway model=glm-4-plus
+[2026-09-21T01:23:11.282Z] req he82f7 | OK synth-stream | 271093ms | in=13556 out=16384 tools=1 chars=1
+[2026-09-21T01:23:11.521Z] req ou3wc2 | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T01:28:11.544Z] req ou3wc2 | reintento 1/4 en 1019ms (causa: http 502)
+[2026-09-21T01:28:33.465Z] req ukko5i | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:29:29.690Z] req ukko5i | eco gateway model=glm-4-plus
+[2026-09-21T01:29:29.691Z] req ukko5i | OK synth-stream | 56227ms | in=13462 out=2418 tools=1 chars=87
+[2026-09-21T01:29:29.771Z] req gyo1ss | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T01:29:33.831Z] req gyo1ss | eco gateway model=glm-4-plus
+[2026-09-21T01:29:33.832Z] req gyo1ss | OK synth-stream | 4061ms | in=17633 out=236 tools=0 chars=788
+[2026-09-21T01:29:57.875Z] req zgol8j | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:31:04.364Z] req zgol8j | eco gateway model=glm-4-plus
+[2026-09-21T01:31:04.365Z] req zgol8j | OK synth-stream | 66491ms | in=13720 out=4253 tools=1 chars=69
+[2026-09-21T01:31:04.447Z] req 3slqln | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T01:31:09.397Z] req 3slqln | eco gateway model=glm-4-plus
+[2026-09-21T01:31:09.397Z] req 3slqln | OK synth-stream | 4951ms | in=19691 out=275 tools=0 chars=1003
+[2026-09-21T01:31:25.618Z] req giqyvk | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=2 | tools=20
+[2026-09-21T01:31:50.341Z] req giqyvk | eco gateway model=glm-4-plus
+[2026-09-21T01:31:50.342Z] req giqyvk | OK synth-stream | 24724ms | in=13564 out=1825 tools=1 chars=1
+[2026-09-21T01:31:50.407Z] req xib1le | POST /v1/messages?beta=true | modelo_up=glm-5.3-flash | stream=true | msgs=5 | tools=20
+[2026-09-21T01:31:56.631Z] req xib1le | eco gateway model=glm-4-plus
+[2026-09-21T01:31:56.632Z] req xib1le | OK synth-stream | 6226ms | in=17141 out=323 tools=0 chars=1038
+[2026-09-21T01:33:12.595Z] req ou3wc2 | reintento 2/4 en 1916ms (causa: http 502)

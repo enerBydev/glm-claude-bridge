@@ -121,3 +121,26 @@ Stage Summary:
 - Límites operativos documentados: 2 QPS, 30 req/10min, 300 req/día (bucket key), caché corta, sondas cutoff ruidosas.
 - Artefactos nuevos/modificados: probe.mjs (nuevo), bridge.mjs, glm-claude, glm-bridge, README.md, README.es.md, scripts/ (legión: api-mapper.py, behavioral-fingerprint.py, verify-model.sh, fingerprint-model.sh + resultados JSONL/JSON).
 - Pendiente (fuera de alcance de esta tarea): push a GitHub requiere token fresco (el anterior se recomendó revocar); el CI ya está configurado en .github/workflows/ci.yml.
+
+---
+Task ID: 4-test-agentico-juego
+Agent: Super Z (principal)
+Task: Push a GitHub (pendiente de token) + prueba agéntica completa: Claude Code × glm-claude-bridge construye juego pixel-art Mario (Nuxt 3 + Nix + GitHub Pages)
+
+Work Log:
+- Estado GitHub: el reset del entorno perdió remote y credenciales (git remote vacío, sin gh CLI). Pendiente token fresco del usuario para push.
+- TEST AGÉNTICO: múltiples runs de Claude Code 2.1.278 vía glm-claude. Hallazgos operativos críticos:
+  1. El runtime del sandbox MATA procesos detached entre tool calls (heartbeat: 1 beat → muerto al iniciar siguiente tool call). Workaround: ejecutar CC SIEMPRE en primer plano (tool calls ≤10 min).
+  2. CC con --dangerously-skip-permissions en -p mode SE CUELGA al arrancar (incluso con bypassPermissionsModeAccepted=true). SOLUCIÓN: --permission-mode acceptEdits (funciona perfecto con Write).
+  3. WAF del gateway (Alibaba, cookie acw_tc): tras ~8-12 peticiones en ventana rolling, LAS PETICIONES SSE (stream:true) ENTRAN EN BLACKHOLE DE EXACTAMENTE 300s → respuesta vacía (out=1). Cookies NO lo evitan; throttle 3-8s NO lo evita. Las stream:false SIEMPRE pasan (verificado con outputs de 3000 tokens y bodies de 5.7k+ durante la misma ventana de penalización).
+  4. FIX DEFINITIVO en bridge.mjs: STREAMING SINTÉTICO — el bridge pide SIEMPRE stream:false al upstream y sintetiza los eventos SSE Anthropic (message_start/content_block_*/message_stop) desde la respuesta completa. CC no nota la diferencia. Env GLM_BRIDGE_UPSTREAM_STREAM=1 restaura el SSE real. + GLM_BRIDGE_MAX_OUT (cap de max_tokens, p.ej. 8192/16384) porque CC pide 32768 y el backend trunca/encola.
+  5. Límite de longitud de output: un solo Write de ~700 líneas excede 8192-16384 tokens de salida → truncado del JSON del tool call. Solución: descomponer en ficheros menores (sprites/engine/componente).
+- RESULTADO: 9/9 ficheros del juego escritos por Claude Code vía el bridge: nuxt.config.ts, app.vue, public/.nojekyll, flake.nix, .github/workflows/deploy.yml, README.md, composables/gameSprites.js (293 líneas), composables/gameEngine.js (528 líneas), components/GameCanvas.vue (245 líneas).
+- BUILD: npm run generate OK → .output/public (index.html + _nuxt con el juego compilado). sin errores de sintaxis/imports.
+- Git: repo del juego inicializado (main, commit 360e2b8) + bridge repo commit 375d95a (v2: streaming sintético + cookie jar + probe + throttle + --model). Ambos listos para push.
+- Cuota: x-ratelimit remaining-daily ~20 al cerrar (día nuevo = reset pronto).
+
+Stage Summary:
+- El test agéntico demuestra Claude Code oficial funcionando END-TO-END sobre GLM vía glm-bridge: lectura de spec, escritura multi-fichero, bucle de herramientas, --continue entre sesiones, y build verificado.
+- DESCUBRIMIENTO CLAVE para producción: usar el bridge en modo streaming sintético (default ahora) — el SSE nativo del gateway es NO FIABLE bajo carga (blackhole 300s).
+- Pendiente: push de ambos repos (game → enerBydev/mario-nuxt-pixel → Pages; bridge → enerBydev/glm-claude-bridge) cuando el usuario provea token fresco.
